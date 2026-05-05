@@ -1,9 +1,10 @@
 /**
  * NepalFlow Scheduler Service
- * Checks for due posts every minute and publishes them via Facebook Graph API
+ * Checks for due posts every minute and publishes via Facebook Graph API
  */
 
 const cron = require('node-cron');
+const { v4: uuidv4 } = require('uuid');
 const db = require('../db/database');
 const facebookService = require('./facebookService');
 
@@ -14,7 +15,7 @@ let schedulerRunning = false;
  */
 function getDuePosts() {
   const now = new Date().toISOString();
-  return db.prepare(`
+  return db.all(`
     SELECT
       p.*,
       sa.access_token,
@@ -28,34 +29,34 @@ function getDuePosts() {
       AND sa.is_active = 1
     ORDER BY p.scheduled_at ASC
     LIMIT 20
-  `).all(now);
+  `, [now]);
 }
 
 /**
  * Mark a post as published
  */
 function markPublished(postId, platformPostId) {
-  db.prepare(`
+  db.run(`
     UPDATE posts
     SET status = 'published',
         platform_post_id = ?,
-        published_at = CURRENT_TIMESTAMP,
-        updated_at = CURRENT_TIMESTAMP
+        published_at = datetime('now'),
+        updated_at = datetime('now')
     WHERE id = ?
-  `).run(platformPostId, postId);
+  `, [platformPostId, postId]);
 }
 
 /**
  * Mark a post as failed
  */
 function markFailed(postId, errorMessage) {
-  db.prepare(`
+  db.run(`
     UPDATE posts
     SET status = 'failed',
         error_message = ?,
-        updated_at = CURRENT_TIMESTAMP
+        updated_at = datetime('now')
     WHERE id = ?
-  `).run(errorMessage, postId);
+  `, [errorMessage, postId]);
 }
 
 /**
@@ -88,10 +89,10 @@ async function processPost(post) {
     console.log(`✅ Post ${post.id} published successfully. Platform ID: ${platformPostId}`);
 
     // Seed initial analytics row
-    db.prepare(`
-      INSERT INTO analytics (post_id, likes_count, comments_count, shares_count)
-      VALUES (?, 0, 0, 0)
-    `).run(post.id);
+    db.run(`
+      INSERT INTO analytics (id, post_id, likes_count, comments_count, shares_count)
+      VALUES (?, ?, 0, 0, 0)
+    `, [uuidv4(), post.id]);
 
   } catch (error) {
     console.error(`❌ Failed to publish post ${post.id}:`, error.message);
@@ -139,22 +140,13 @@ function startScheduler() {
  * Schedule a new post (insert into DB)
  */
 function schedulePost({ userId, accountId, content, mediaUrls = [], scheduledAt, hashtags = [] }) {
-  const id = require('uuid').v4();
-
-  const result = db.prepare(`
+  const id = uuidv4();
+  db.run(`
     INSERT INTO posts (id, user_id, account_id, content, media_urls, scheduled_at, hashtags, status)
     VALUES (?, ?, ?, ?, ?, ?, ?, 'scheduled')
-  `).run(
-    id,
-    userId,
-    accountId,
-    content,
-    JSON.stringify(mediaUrls),
-    scheduledAt,
-    JSON.stringify(hashtags)
-  );
+  `, [id, userId, accountId, content, JSON.stringify(mediaUrls), scheduledAt, JSON.stringify(hashtags)]);
 
-  return db.prepare('SELECT * FROM posts WHERE id = ?').get(id);
+  return db.get('SELECT * FROM posts WHERE id = ?', [id]);
 }
 
 module.exports = { startScheduler, schedulePost, runSchedulerTick, getDuePosts };

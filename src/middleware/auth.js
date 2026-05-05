@@ -30,7 +30,7 @@ function authenticate(req, res, next) {
   const token = authHeader.split(' ')[1];
   try {
     const decoded = jwt.verify(token, JWT_SECRET);
-    const user = db.prepare('SELECT * FROM users WHERE id = ?').get(decoded.id);
+    const user = db.get('SELECT * FROM users WHERE id = ?', [decoded.id]);
     if (!user) return res.status(401).json({ error: 'Unauthorized: User not found' });
     req.user = user;
     next();
@@ -46,9 +46,10 @@ function authorizeAccount(req, res, next) {
   const accountId = req.params.accountId || req.body.accountId;
   if (!accountId) return next();
 
-  const account = db.prepare(
-    'SELECT * FROM social_accounts WHERE id = ? AND user_id = ?'
-  ).get(accountId, req.user.id);
+  const account = db.get(
+    'SELECT * FROM social_accounts WHERE id = ? AND user_id = ?',
+    [accountId, req.user.id]
+  );
 
   if (!account) {
     return res.status(403).json({ error: 'Forbidden: Account does not belong to you' });
