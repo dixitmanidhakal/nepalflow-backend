@@ -1,0 +1,30 @@
+# Dependencies
+node_modules/
+
+# Environment - NEVER commit real credentials
+.env
+.env.local
+.env.production
+
+# Database files
+db/*.sqlite
+db/*.sqlite3
+*.db
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/settings.json
+.idea/
+
+# Test coverage
+coverage/
+
+# Uploads
+uploads/
