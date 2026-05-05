@@ -23,9 +23,10 @@ const db = require('../db/database');
 const { authenticate } = require('../middleware/auth');
 
 // ─── Grok Client (OpenAI-compatible) ──────────────────────────────────────────
-const grokClient = process.env.GROK_API_KEY
+const GROK_KEY = process.env.GROK_API_KEY;
+const grokClient = GROK_KEY && !GROK_KEY.includes('your_grok') && !GROK_KEY.includes('_here')
   ? new OpenAI({
-      apiKey: process.env.GROK_API_KEY,
+      apiKey: GROK_KEY,
       baseURL: 'https://api.x.ai/v1',
     })
   : null;
