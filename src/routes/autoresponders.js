@@ -30,15 +30,16 @@ router.post('/', authenticate, (req, res) => {
   const { name, trigger_type = 'keyword', keywords, response, platforms, account_id, match_type = 'any' } = req.body;
   if (!name?.trim())     return res.status(400).json({ error: 'Rule name is required' });
   if (!response?.trim()) return res.status(400).json({ error: 'Response message is required' });
-  if (!keywords || !Array.isArray(keywords) || keywords.length === 0) {
-    return res.status(400).json({ error: 'At least one keyword is required' });
+  // Keywords only required for keyword trigger type
+  if (trigger_type === 'keyword' && (!keywords || !Array.isArray(keywords) || keywords.length === 0)) {
+    return res.status(400).json({ error: 'At least one keyword is required for keyword trigger' });
   }
   const id = uuidv4();
   db.run(
     `INSERT INTO auto_responders (id, user_id, account_id, name, trigger_type, keywords, response, platforms, match_type)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [id, req.user.id, account_id || null, name.trim(), trigger_type,
-     JSON.stringify(keywords.map(k => k.toLowerCase().trim())),
+     JSON.stringify(Array.isArray(keywords) ? keywords.map(k => k.toLowerCase().trim()) : []),
      response.trim(),
      JSON.stringify(platforms || ['facebook', 'instagram']),
      match_type]
