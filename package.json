@@ -26,6 +26,7 @@
     "multer": "^1.4.5-lts.1",
     "node-cron": "^3.0.3",
     "node-sqlite3-wasm": "^0.8.56",
+    "openai": "^6.36.0",
     "passport": "^0.7.0",
     "passport-facebook": "^3.0.0",
     "passport-google-oauth20": "^2.0.0",

@@ -1,143 +1,199 @@
 /**
- * AI Content Generation Routes (No external API key required — uses smart templates)
- * POST /api/ai/generate       - generate post content
- * POST /api/ai/hashtags       - suggest hashtags for content
- * GET  /api/ai/best-time      - best time to post analysis
- * GET  /api/ai/history        - generation history
- * GET  /api/ai/insights       - performance insights & tips
+ * AI Content Generation Routes — Powered by Grok (xAI)
+ * Grok uses OpenAI-compatible API: https://api.x.ai/v1
+ *
+ * POST /api/ai/generate                  - generate social media post (Grok)
+ * POST /api/ai/rewrite                   - rewrite/improve existing content (Grok)
+ * POST /api/ai/hashtags                  - suggest hashtags (Grok + analytics)
+ * POST /api/ai/reply-suggestion          - suggest reply to a comment (Grok)
+ * POST /api/ai/translate                 - translate content EN <-> NE (Grok)
+ * POST /api/ai/caption                   - generate image caption (Grok)
+ * POST /api/ai/auto-responder-suggestion - AI suggests responder rules (Grok)
+ * GET  /api/ai/best-time                 - best time to post (analytics-based)
+ * GET  /api/ai/insights                  - smart performance insights + Grok tip
+ * GET  /api/ai/history                   - generation history
+ * GET  /api/ai/status                    - check Grok availability
  */
+
 const express = require('express');
 const router = express.Router();
 const { v4: uuidv4 } = require('uuid');
+const OpenAI = require('openai');
 const db = require('../db/database');
 const { authenticate } = require('../middleware/auth');
 
-// ─── Content Templates by Tone + Niche ────────────────────────────────────────
-const CONTENT_TEMPLATES = {
+// ─── Grok Client (OpenAI-compatible) ──────────────────────────────────────────
+const grokClient = process.env.GROK_API_KEY
+  ? new OpenAI({
+      apiKey: process.env.GROK_API_KEY,
+      baseURL: 'https://api.x.ai/v1',
+    })
+  : null;
+
+const GROK_MODEL = process.env.GROK_MODEL || 'grok-3-mini';
+
+// ─── Fallback Template Engine ─────────────────────────────────────────────────
+const FALLBACK_TEMPLATES = {
   promotional: [
-    `🎉 Exciting news! {{topic}} is here and we couldn't be more thrilled to share it with you!\n\n✨ Here's what makes it special:\n• {{benefit1}}\n• {{benefit2}}\n• {{benefit3}}\n\nDon't miss out — {{cta}}! 🚀`,
-    `💥 Big announcement from {{business}}!\n\nWe're proud to introduce {{topic}} — designed specifically for you.\n\n🔥 Limited time: {{cta}}\n\nTag someone who needs to know about this! 👇`,
-    `The wait is over! {{topic}} is finally available.\n\n🌟 Why you'll love it:\n→ {{benefit1}}\n→ {{benefit2}}\n\nVisit us today or call/WhatsApp to learn more. {{cta}}`,
+    `🎉 Exciting news! {{topic}} is here!\n\n✨ Why you'll love it:\n• High quality, crafted for Nepal\n• Best prices guaranteed\n• Fast delivery nationwide\n\nDon't miss out — Contact us now! 🚀`,
+    `💥 Big announcement from {{business}}!\n\nWe're proud to introduce {{topic}} — made just for you.\n\n🔥 Limited time offer!\n\nTag someone who needs to know about this! 👇`,
   ],
   educational: [
-    `💡 Did you know? {{topic}}\n\nHere are 3 things you should know:\n\n1️⃣ {{point1}}\n2️⃣ {{point2}}\n3️⃣ {{point3}}\n\nSave this post for later! What questions do you have? Drop them below 👇`,
-    `📚 Quick tip for {{topic}}:\n\n{{tip}}\n\nThis simple trick can make a huge difference. Have you tried this before? Let us know in the comments! 💬`,
-    `🧠 Let's talk about {{topic}}.\n\nMany people don't realize that {{insight}}.\n\nHere's what you can do:\n✅ {{action1}}\n✅ {{action2}}\n\nFollow us for more tips like this every week!`,
+    `💡 Did you know? {{topic}}\n\n3 things every Nepali business owner should know:\n\n1️⃣ Planning ahead makes all the difference\n2️⃣ Consistency is the key to growth\n3️⃣ Your community is your biggest asset\n\nSave this! Drop your questions below 👇`,
   ],
   engaging: [
-    `🤔 Quick question for our community:\n\n{{question}}\n\nWe'd love to hear from you! Share your thoughts in the comments below 👇\n\n(And tag a friend who would have an interesting answer!)`,
-    `This or That? 🤷\n\n{{option1}} OR {{option2}}?\n\nComment A or B below and tell us why! We're curious to see what our community thinks 🗳️`,
-    `Let's settle this once and for all! 😄\n\n{{topic}} — what's your take?\n\nType YES or NO below and tag someone who would disagree with you! 👇`,
+    `🤔 Quick question for our community:\n\nWhat's your experience with {{topic}}?\n\nShare your thoughts below 👇 Tag a friend who'd have an interesting answer!`,
   ],
   festival: [
-    `🙏 {{festival}} को हार्दिक शुभकामना! / Warm wishes on {{festival}}!\n\nMay this {{festival}} bring joy, prosperity and happiness to you and your family. 🌸\n\n— Team {{business}} 💝`,
-    `✨ Happy {{festival}}! 🎊\n\nWishing all our valued customers and friends a blessed {{festival}} filled with love and laughter.\n\n{{business}} is {{hours}} during this festive season. 🕐`,
-    `🎊 Celebrating {{festival}} with our amazing community!\n\nThis is a time for gratitude, togetherness and new beginnings.\n\nFrom all of us at {{business}} — {{festival}} को शुभकामना! 🙏`,
-  ],
-  product: [
-    `✨ Introducing {{product_name}}!\n\n{{product_description}}\n\n💰 Price: {{price}}\n📍 Available at: {{location}}\n📞 Contact: {{contact}}\n\nLimited stock available — order now! 🛒`,
-    `🆕 NEW ARRIVAL: {{product_name}}\n\n{{product_description}}\n\n🌟 Features:\n• {{feature1}}\n• {{feature2}}\n\nDM us or visit our store to get yours today! 👆`,
-    `🛍️ Your new favorite {{product_name}} is here!\n\n{{product_description}}\n\nPerfect for {{use_case}}. Grab yours before it's gone! 🔥\n\n💬 Comment "INFO" for details or call us directly.`,
-  ],
-  announcement: [
-    `📢 Important announcement from {{business}}:\n\n{{announcement}}\n\nWe appreciate your continued support and trust in us. 🙏\n\nFor questions, reach us at {{contact}}.`,
-    `🚨 ATTENTION: {{headline}}\n\n{{details}}\n\nEffective from: {{date}}\n\nThank you for your understanding. We're here to help if you have any questions! 💬`,
-    `📌 UPDATE: {{topic}}\n\n{{details}}\n\nWe're committed to serving you better every day. Your feedback matters to us!\n\n📞 Contact us anytime: {{contact}}`,
+    `🙏 {{topic}} को हार्दिक शुभकामना! / Warm wishes on {{topic}}!\n\nMay this bring joy, prosperity and happiness to you and your family. 🌸\n\n— Team {{business}} 💝`,
   ],
   story: [
-    `Here's a story that might inspire you... 💭\n\n{{story_intro}}\n\n{{story_middle}}\n\nThe lesson? {{lesson}}\n\nHave you had a similar experience? Share in the comments! 👇`,
-    `Behind the scenes at {{business}} 🏠\n\n{{behind_scenes}}\n\nEvery day brings new challenges and new wins. We're grateful for every single one of you who supports our journey. ❤️`,
-    `Our story began when {{origin_story}}...\n\nToday, we serve {{customer_count}}+ happy customers and we're just getting started! 🚀\n\nThank you for being part of our journey. {{cta}}`,
+    `Behind the scenes at {{business}} 🏠\n\nEvery day we work hard to bring you the best {{topic}}. We're grateful for your support! ❤️`,
   ],
 };
 
 const NEPALI_HASHTAGS = {
-  business: ['#Nepal', '#NepalBusiness', '#Kathmandu', '#SupportLocal', '#MadeInNepal', '#NepalFirst'],
-  food: ['#NepalFood', '#NepalCuisine', '#FoodNepal', '#KathmanduFood', '#NepalRestaurant'],
-  fashion: ['#NepalFashion', '#NepalStyle', '#KathmanduFashion', '#NepalDesign'],
-  festival: ['#Nepal', '#NepalFestival', '#Dashain', '#Tihar', '#Holi', '#Teej'],
-  general: ['#Nepal', '#NepalBusiness', '#Kathmandu', '#NepalFlow', '#SocialMedia'],
+  business:    ['#Nepal', '#NepalBusiness', '#Kathmandu', '#SupportLocal', '#MadeInNepal', '#NepalFirst', '#GrowNepal'],
+  food:        ['#NepalFood', '#NepalCuisine', '#FoodNepal', '#KathmanduFood', '#NepalRestaurant', '#DalBhat'],
+  fashion:     ['#NepalFashion', '#NepalStyle', '#KathmanduFashion', '#NepalDesign', '#HandmadeNepal'],
+  festival:    ['#Nepal', '#NepalFestival', '#Dashain', '#Tihar', '#Holi', '#Teej', '#Nepali'],
+  tech:        ['#NepalTech', '#StartupNepal', '#TechNepal', '#DigitalNepal', '#ITNepal', '#KathmanduTech'],
+  travel:      ['#VisitNepal', '#Nepal', '#NepalTravel', '#Himalayas', '#Trekking', '#ExploreNepal'],
+  beauty:      ['#NepalBeauty', '#Kathmandu', '#NepalMakeup', '#BeautyNepal', '#NaturalBeauty'],
+  real_estate: ['#NepalRealEstate', '#KathmanduProperty', '#Nepal', '#NepalHomes', '#PropertyNepal'],
+  general:     ['#Nepal', '#NepalBusiness', '#Kathmandu', '#NepalFlow', '#SocialMedia', '#GrowWithNepal'],
 };
 
-// POST /api/ai/generate
-router.post('/generate', authenticate, (req, res) => {
+// ─── Helper: Call Grok ────────────────────────────────────────────────────────
+async function callGrok(systemPrompt, userPrompt, opts = {}) {
+  if (!grokClient) return null;
+  const resp = await grokClient.chat.completions.create({
+    model: GROK_MODEL,
+    messages: [
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: userPrompt },
+    ],
+    temperature: opts.temperature ?? 0.85,
+    max_tokens: opts.maxTokens ?? 1024,
+    top_p: opts.topP ?? 0.95,
+  });
+  return resp.choices[0]?.message?.content?.trim() || null;
+}
+
+// ─── Helper: Fallback template ────────────────────────────────────────────────
+function useFallback(topic, tone, business) {
+  const tpls = FALLBACK_TEMPLATES[tone] || FALLBACK_TEMPLATES.promotional;
+  return tpls[Math.floor(Math.random() * tpls.length)]
+    .replace(/\{\{topic\}\}/g, topic)
+    .replace(/\{\{business\}\}/g, business || 'Our Business');
+}
+
+// ─── System prompt builder ────────────────────────────────────────────────────
+function buildSysPrompt(platform, tone, language) {
+  const platformGuide = {
+    facebook: 'Facebook: conversational, 1-3 paragraphs, stories work well. Max 400 words.',
+    instagram: 'Instagram: punchy opener, emojis, line breaks, CTA at end. Max 250 words.',
+    tiktok: 'TikTok: hook in first line, very concise, trendy. Max 100 words visible.',
+  }[platform] || 'Facebook: conversational, 1-3 paragraphs.';
+
+  const toneGuide = {
+    promotional:  'Salesy but genuine. Create urgency. Clear call-to-action.',
+    educational:  'Informative, accessible. Use numbered lists. Teach something.',
+    engaging:     'Ask questions. Encourage comments. Be relatable.',
+    festival:     'Warm, celebratory. Mix English and Nepali greetings.',
+    product:      'Feature-focused, benefit-driven. Address pain points.',
+    announcement: 'Clear, professional. State news first then details.',
+    story:        'Narrative, personal. Show vulnerability and humanity.',
+  }[tone] || 'Genuine and engaging.';
+
+  const langNote = language === 'ne'
+    ? 'Write PRIMARILY in Nepali (Devanagari script) with minimal English.'
+    : 'Write in English. Sprinkle occasional Nepali words like "Namaste", "Dhanyabad" for authenticity.';
+
+  return `You are an expert social media content creator for Nepali businesses.
+PLATFORM: ${platformGuide}
+TONE: ${toneGuide}
+LANGUAGE: ${langNote}
+RULES:
+- Sound genuine, not AI-generated
+- Use emojis naturally
+- Understand Nepali culture: family values, community pride, festival importance
+- Do NOT include hashtags in post body
+- Do NOT use placeholder text like [business name]
+- Return ONLY the post content, no explanations`;
+}
+
+// ─── POST /api/ai/generate ────────────────────────────────────────────────────
+router.post('/generate', authenticate, async (req, res) => {
   const {
     topic = '',
     tone = 'promotional',
     platform = 'facebook',
-    business_name = 'Our Business',
+    business_name = '',
     niche = 'general',
     language = 'en',
-    custom_vars = {},
+    additional_context = '',
   } = req.body;
 
   if (!topic.trim()) return res.status(400).json({ error: 'Topic is required' });
 
-  const templates = CONTENT_TEMPLATES[tone] || CONTENT_TEMPLATES.promotional;
-  const template = templates[Math.floor(Math.random() * templates.length)];
-
-  // Replace known variables
-  const vars = {
-    topic,
-    business: business_name,
-    benefit1: `High quality ${topic}`,
-    benefit2: `Best prices in Nepal`,
-    benefit3: `Fast delivery to your doorstep`,
-    cta: `Contact us now!`,
-    point1: `${topic} can significantly improve your daily routine`,
-    point2: `Many Nepali businesses are already benefiting`,
-    point3: `Getting started is easier than you think`,
-    tip: `When it comes to ${topic}, consistency is key`,
-    insight: `${topic} works best when you plan ahead`,
-    action1: `Start small and scale up`,
-    action2: `Track your progress weekly`,
-    question: `What's your experience with ${topic}?`,
-    option1: topic,
-    option2: 'Something else',
-    festival: topic,
-    hours: 'open as usual',
-    product_name: topic,
-    product_description: `Premium quality ${topic} crafted with care`,
-    price: 'Contact for price',
-    location: 'Kathmandu',
-    contact: 'DM us or call/WhatsApp',
-    feature1: 'Premium quality materials',
-    feature2: 'Locally made in Nepal',
-    use_case: 'everyday use',
-    announcement: topic,
-    headline: topic,
-    details: `We are pleased to inform you about ${topic}`,
-    date: 'Immediately',
-    story_intro: `When we first started thinking about ${topic}...`,
-    story_middle: `After months of hard work and dedication...`,
-    lesson: `Never give up on what you believe in`,
-    behind_scenes: `Every day we work tirelessly to bring you the best ${topic}`,
-    origin_story: `we noticed a gap in the ${topic} market in Nepal`,
-    customer_count: '500',
-    ...custom_vars,
-  };
-
-  let content = template;
-  for (const [key, val] of Object.entries(vars)) {
-    content = content.replace(new RegExp(`{{${key}}}`, 'g'), val);
-  }
-
-  // Platform-specific character limit warning
   const limits = { facebook: 63206, instagram: 2200, tiktok: 2200 };
   const limit = limits[platform] || 63206;
-  const charCount = content.length;
 
-  // Generate hashtag suggestions
-  const nicheHashtags = NEPALI_HASHTAGS[niche] || NEPALI_HASHTAGS.general;
-  const toneHashtags = {
-    promotional: ['#Offer', '#Deal', '#BuyNow', '#LimitedTime'],
-    educational: ['#Tips', '#LearnMore', '#DidYouKnow', '#Education'],
-    engaging: ['#CommunityQuestion', '#YourOpinion', '#Poll'],
-    festival: ['#Festival', '#Celebration', '#Nepal'],
-  }[tone] || [];
-  const hashtags = [...new Set([...nicheHashtags, ...toneHashtags])].slice(0, 8);
+  if (grokClient) {
+    try {
+      const raw = await callGrok(
+        buildSysPrompt(platform, tone, language),
+        `Create a ${tone} social media post for ${platform} about: "${topic}"
+${business_name ? `Business: ${business_name}` : ''}
+${additional_context ? `Context: ${additional_context}` : ''}
 
-  // Save to history
+Write 3 variations separated by "---VARIANT---". Each should differ in approach and style.`,
+        { maxTokens: 1600 }
+      );
+
+      if (raw) {
+        const variants = raw.split('---VARIANT---').map(v => v.trim()).filter(Boolean);
+        const content = variants[0];
+
+        const id = uuidv4();
+        db.run(
+          'INSERT INTO ai_generations (id, user_id, prompt, result, platform, tone) VALUES (?, ?, ?, ?, ?, ?)',
+          [id, req.user.id, `${tone} | ${topic}`, content, platform, tone]
+        );
+
+        // AI hashtags
+        const hashRaw = await callGrok(
+          'You are a hashtag expert for Nepal market social media.',
+          `Generate 10 relevant hashtags for a ${platform} post about "${topic}" targeting Nepal. Comma-separated, start with #. Return ONLY hashtags.`,
+          { temperature: 0.4, maxTokens: 200 }
+        );
+        const grokTags = hashRaw
+          ? hashRaw.split(/[,\s\n]+/).map(h => h.trim()).filter(h => h.startsWith('#')).slice(0, 10)
+          : [];
+
+        const hashtags = [...new Set([...grokTags, ...(NEPALI_HASHTAGS[niche] || NEPALI_HASHTAGS.general)])].slice(0, 12);
+
+        return res.json({
+          id, content, hashtags, platform, tone,
+          char_count: content.length, char_limit: limit,
+          within_limit: content.length <= limit,
+          alternatives: variants.slice(1),
+          ai_powered: true, model: GROK_MODEL,
+        });
+      }
+    } catch (err) {
+      console.error('[Grok Error] generate:', err.message);
+    }
+  }
+
+  // Fallback
+  const content = useFallback(topic, tone, business_name);
+  const hashtags = [...new Set([
+    ...(NEPALI_HASHTAGS[niche] || NEPALI_HASHTAGS.general),
+    ...({ promotional: ['#Offer', '#Deal', '#BuyNow'], educational: ['#Tips', '#LearnMore'], engaging: ['#Poll', '#Question'] }[tone] || []),
+  ])].slice(0, 8);
+
   const id = uuidv4();
   db.run(
     'INSERT INTO ai_generations (id, user_id, prompt, result, platform, tone) VALUES (?, ?, ?, ?, ?, ?)',
@@ -145,109 +201,307 @@ router.post('/generate', authenticate, (req, res) => {
   );
 
   res.json({
-    id,
-    content,
-    hashtags,
-    platform,
-    tone,
-    char_count: charCount,
-    char_limit: limit,
-    within_limit: charCount <= limit,
-    alternatives: templates
-      .filter(t => t !== template)
-      .slice(0, 2)
-      .map(t => {
-        let alt = t;
-        for (const [key, val] of Object.entries(vars)) {
-          alt = alt.replace(new RegExp(`{{${key}}}`, 'g'), val);
-        }
-        return alt;
-      }),
+    id, content, hashtags, platform, tone,
+    char_count: content.length, char_limit: limit, within_limit: content.length <= limit,
+    alternatives: [],
+    ai_powered: false,
+    note: grokClient ? 'Grok temporarily unavailable, using templates' : 'Set GROK_API_KEY in .env to enable Grok AI',
   });
 });
 
-// POST /api/ai/hashtags — suggest hashtags for given content
-router.post('/hashtags', authenticate, (req, res) => {
+// ─── POST /api/ai/rewrite ─────────────────────────────────────────────────────
+router.post('/rewrite', authenticate, async (req, res) => {
+  const {
+    content = '',
+    instruction = 'improve',
+    platform = 'facebook',
+    language = 'en',
+  } = req.body;
+
+  if (!content.trim()) return res.status(400).json({ error: 'Content is required' });
+
+  if (!grokClient) {
+    return res.status(503).json({
+      error: 'Grok AI not configured',
+      message: 'Add GROK_API_KEY to .env to enable AI rewriting',
+    });
+  }
+
+  const instructionMap = {
+    improve:    'Improve writing quality, fix grammar, make more engaging.',
+    shorten:    'Make concise and punchy. Max 100 words. Keep key points only.',
+    expand:     'Expand into detailed, story-driven post with emotion and context.',
+    make_viral: 'Rewrite for maximum virality: strong hook, emotional resonance, shareable ending.',
+    add_emotion:'Add emotional depth, warmth, human connection.',
+    formal:     'Rewrite in professional formal business tone.',
+    casual:     'Rewrite in casual friendly conversational tone like talking to a friend.',
+    nepali:     'Translate and adapt into natural Nepali (Devanagari script).',
+    english:    'Translate into clear natural English.',
+  };
+
+  try {
+    const rewritten = await callGrok(
+      `You are an expert social media copywriter for Nepal market.
+${buildSysPrompt(platform, 'promotional', language)}
+Task: ${instructionMap[instruction] || instructionMap.improve}
+Return ONLY the rewritten content.`,
+      `Rewrite this ${platform} post:\n\n"${content}"`,
+      { temperature: 0.8, maxTokens: 800 }
+    );
+    if (!rewritten) throw new Error('Empty response');
+    res.json({ original: content, rewritten, instruction, char_count: rewritten.length, ai_powered: true, model: GROK_MODEL });
+  } catch (err) {
+    console.error('[Grok Error] rewrite:', err.message);
+    res.status(503).json({ error: 'Rewrite failed', details: err.message });
+  }
+});
+
+// ─── POST /api/ai/hashtags ────────────────────────────────────────────────────
+router.post('/hashtags', authenticate, async (req, res) => {
   const { content = '', platform = 'facebook', niche = 'general' } = req.body;
   if (!content.trim()) return res.status(400).json({ error: 'Content is required' });
 
-  const words = content.toLowerCase().split(/\W+/).filter(w => w.length > 3);
-  const contentHashtags = [...new Set(words.slice(0, 5).map(w => `#${w.charAt(0).toUpperCase()}${w.slice(1)}`))];
-
-  // Pull user's best-performing hashtags
   const userBest = db.all(
     'SELECT hashtag, use_count, avg_likes FROM hashtag_stats WHERE user_id = ? ORDER BY avg_likes DESC LIMIT 5',
     [req.user.id]
   );
-
   const nicheHashtags = NEPALI_HASHTAGS[niche] || NEPALI_HASHTAGS.general;
-  const instagramHashtags = platform === 'instagram'
-    ? ['#nepal', '#nepali', '#kathmandudiaries', '#visitnepal', '#nepalphoto']
+
+  let grokTags = [];
+  if (grokClient) {
+    try {
+      const raw = await callGrok(
+        'You are a hashtag research expert for Nepal social media.',
+        `Suggest 15 optimal hashtags for this ${platform} post targeting Nepal market.
+Mix: popular (high reach), medium, and niche tags.
+Post: "${content.slice(0, 400)}"
+Niche: ${niche}
+Return ONLY hashtags comma-separated starting with #.`,
+        { temperature: 0.4, maxTokens: 300 }
+      );
+      if (raw) grokTags = raw.split(/[,\s\n]+/).map(h => h.trim()).filter(h => h.startsWith('#'));
+    } catch (err) {
+      console.error('[Grok Error] hashtags:', err.message);
+    }
+  }
+
+  if (!grokTags.length) {
+    const words = content.toLowerCase().split(/\W+/).filter(w => w.length > 3);
+    grokTags = [...new Set(words.slice(0, 5).map(w => `#${w.charAt(0).toUpperCase()}${w.slice(1)}`))];
+  }
+
+  const extra = platform === 'instagram'
+    ? ['#nepal', '#nepali', '#kathmandudiaries', '#visitnepal2026', '#nepalphoto', '#ig_nepal']
     : [];
 
-  const all = [
-    ...new Set([
-      ...contentHashtags,
-      ...userBest.map(h => h.hashtag),
-      ...nicheHashtags,
-      ...instagramHashtags,
-    ]),
-  ].slice(0, 15);
+  const all = [...new Set([...grokTags, ...userBest.map(h => h.hashtag), ...nicheHashtags, ...extra])].slice(0, 20);
 
   res.json({
     suggested: all,
     your_best: userBest.map(h => ({ hashtag: h.hashtag, avg_likes: Math.round(h.avg_likes) })),
     trending_nepal: nicheHashtags,
+    ai_powered: !!grokClient,
   });
 });
 
-// GET /api/ai/best-time — analyze when posts perform best
+// ─── POST /api/ai/reply-suggestion ───────────────────────────────────────────
+router.post('/reply-suggestion', authenticate, async (req, res) => {
+  const {
+    comment = '',
+    post_content = '',
+    commenter_name = '',
+    platform = 'facebook',
+    tone = 'friendly',
+    business_name = '',
+  } = req.body;
+
+  if (!comment.trim()) return res.status(400).json({ error: 'Comment is required' });
+
+  if (!grokClient) {
+    return res.json({
+      suggestions: [
+        `Thank you so much for your comment! 🙏 We really appreciate your support. Please feel free to DM us for more information.`,
+        `Dhanyabad ${commenter_name || ''}! 🙏 We're so glad to hear from you. Reach out to us directly for any questions!`,
+        `Thank you for your kind words! Your support means everything to us. 💙`,
+      ],
+      ai_powered: false,
+      note: 'Set GROK_API_KEY in .env for AI-generated replies',
+    });
+  }
+
+  const toneMap = {
+    friendly:     'warm, friendly, personable',
+    professional: 'professional and courteous',
+    playful:      'fun, playful, energetic with emojis',
+    formal:       'formal and business-like',
+  };
+
+  try {
+    const raw = await callGrok(
+      `You are a social media manager for "${business_name || 'a Nepali business'}" on ${platform}.
+Write authentic, genuine replies to customer comments. Tone: ${toneMap[tone] || toneMap.friendly}.
+Keep replies to 1-3 sentences. Include emojis. Occasionally use Nepali: "Dhanyabad", "Namaste", "Shukriya".
+Be human, not robotic.`,
+      `Generate 3 different reply options to this comment.
+${post_content ? `Post was about: "${post_content.slice(0, 100)}"` : ''}
+Comment from ${commenter_name || 'a customer'}: "${comment}"
+
+Return exactly 3 replies, each on a new line starting with "REPLY:"`,
+      { temperature: 0.9, maxTokens: 500 }
+    );
+
+    let suggestions = raw
+      ? raw.split('\n').filter(l => l.trim().startsWith('REPLY:')).map(l => l.replace(/^REPLY:\s*/i, '').trim()).filter(Boolean)
+      : [];
+
+    if (!suggestions.length && raw) suggestions = [raw.trim()];
+
+    res.json({ suggestions: suggestions.slice(0, 3), ai_powered: true, model: GROK_MODEL });
+  } catch (err) {
+    console.error('[Grok Error] reply-suggestion:', err.message);
+    res.status(503).json({ error: 'Reply generation failed', details: err.message });
+  }
+});
+
+// ─── POST /api/ai/translate ───────────────────────────────────────────────────
+router.post('/translate', authenticate, async (req, res) => {
+  const { content = '', target_language = 'ne', preserve_emojis = true } = req.body;
+  if (!content.trim()) return res.status(400).json({ error: 'Content is required' });
+
+  if (!grokClient) {
+    return res.status(503).json({ error: 'Grok AI not configured', message: 'Add GROK_API_KEY to .env' });
+  }
+
+  try {
+    const targetName = target_language === 'ne' ? 'Nepali (Devanagari script)' : 'English';
+    const translated = await callGrok(
+      `You are an expert Nepali ↔ English social media translator.
+Translate naturally and idiomatically, not word-for-word.
+${preserve_emojis ? 'Preserve all emojis.' : ''}
+Keep hashtags in original form. Return ONLY the translated content.`,
+      `Translate to ${targetName}:\n\n"${content}"`,
+      { temperature: 0.3, maxTokens: 1000 }
+    );
+    res.json({ original: content, translated, target_language, ai_powered: true, model: GROK_MODEL });
+  } catch (err) {
+    console.error('[Grok Error] translate:', err.message);
+    res.status(503).json({ error: 'Translation failed', details: err.message });
+  }
+});
+
+// ─── POST /api/ai/caption ─────────────────────────────────────────────────────
+router.post('/caption', authenticate, async (req, res) => {
+  const {
+    image_description = '',
+    platform = 'instagram',
+    tone = 'engaging',
+    business_name = '',
+    count = 3,
+  } = req.body;
+
+  if (!image_description.trim()) return res.status(400).json({ error: 'Image description is required' });
+
+  if (!grokClient) {
+    return res.json({
+      captions: [
+        `✨ Moments like these make everything worthwhile. 🙏\n\nShare your thoughts below! 👇`,
+        `Every picture tells a story. What does this one say to you? 💬`,
+        `Grateful for moments like this. Thank you for being part of our journey! ❤️`,
+      ].slice(0, count),
+      ai_powered: false,
+    });
+  }
+
+  try {
+    const raw = await callGrok(
+      buildSysPrompt(platform, tone, 'en'),
+      `Generate ${count} ${tone} captions for ${platform} for this image: "${image_description}"
+${business_name ? `Brand: ${business_name}` : ''}
+Make each unique. Separate with "---CAPTION---". Do NOT include hashtags.`,
+      { temperature: 0.9, maxTokens: 800 }
+    );
+    const captions = raw
+      ? raw.split('---CAPTION---').map(c => c.trim()).filter(Boolean).slice(0, count)
+      : [];
+    res.json({ captions, ai_powered: true, model: GROK_MODEL });
+  } catch (err) {
+    console.error('[Grok Error] caption:', err.message);
+    res.status(503).json({ error: 'Caption generation failed', details: err.message });
+  }
+});
+
+// ─── POST /api/ai/auto-responder-suggestion ───────────────────────────────────
+router.post('/auto-responder-suggestion', authenticate, async (req, res) => {
+  const { business_type = 'general', platform = 'facebook' } = req.body;
+
+  if (!grokClient) {
+    return res.json({
+      suggestions: [
+        { name: 'Welcome New Commenters', trigger_type: 'first_time', keywords: [], response: 'Namaste! 🙏 Welcome! Thank you for your first comment. Feel free to DM us anytime!' },
+        { name: 'Price Inquiry Auto-Reply', trigger_type: 'keyword', keywords: ['price', 'cost', 'rate', 'how much', 'kati'], response: 'Thank you for asking! 🙏 Please DM us or WhatsApp for pricing details. Happy to help!' },
+        { name: 'Order Interest Reply', trigger_type: 'keyword', keywords: ['order', 'buy', 'purchase', 'want', 'kina'], response: 'We\'d love to help you! 🛒 Please DM us your details and we\'ll get back shortly. Dhanyabad! 🙏' },
+        { name: 'Delivery Question Reply', trigger_type: 'keyword', keywords: ['delivery', 'ship', 'deliver', 'send', 'pathaunus'], response: 'Yes, we deliver! 🚚 We ship across Nepal. DM us your location for delivery details. 📍' },
+      ],
+      ai_powered: false,
+    });
+  }
+
+  try {
+    const raw = await callGrok(
+      'You are a social media automation expert for Nepali businesses.',
+      `Suggest 5 smart auto-responder rules for a ${business_type} business on ${platform} in Nepal.
+
+For each rule return JSON with:
+- name: descriptive rule name
+- trigger_type: "keyword" | "first_time" | "any_comment"
+- keywords: array of trigger words (include Nepali romanized like "kati", "kina", "pathaunus")
+- response: auto-reply message (max 200 chars, include emoji, may mix English/Nepali)
+- reason: why this rule helps
+
+Return ONLY a valid JSON array. No markdown, no explanation.`,
+      { temperature: 0.6, maxTokens: 1200 }
+    );
+
+    let suggestions = [];
+    try {
+      const match = raw.match(/\[[\s\S]*\]/);
+      if (match) suggestions = JSON.parse(match[0]);
+    } catch { /* ignore */ }
+
+    res.json({ suggestions, ai_powered: true, model: GROK_MODEL });
+  } catch (err) {
+    console.error('[Grok Error] auto-responder-suggestion:', err.message);
+    res.status(503).json({ error: 'Suggestion failed', details: err.message });
+  }
+});
+
+// ─── GET /api/ai/best-time ────────────────────────────────────────────────────
 router.get('/best-time', authenticate, (req, res) => {
   const platform = req.query.platform || 'all';
-
-  // Analyze published posts performance by hour + day
   let sql = `
-    SELECT
-      strftime('%H', p.published_at) as hour,
-      strftime('%w', p.published_at) as day_of_week,
-      AVG(a.likes_count + a.comments_count * 2 + a.shares_count * 3) as avg_engagement,
-      COUNT(*) as post_count
-    FROM posts p
-    LEFT JOIN analytics a ON a.post_id = p.id
-    WHERE p.user_id = ? AND p.status = 'published' AND p.published_at IS NOT NULL
-  `;
+    SELECT strftime('%H', p.published_at) as hour, strftime('%w', p.published_at) as day_of_week,
+      AVG(a.likes_count + a.comments_count * 2 + a.shares_count * 3) as avg_engagement, COUNT(*) as post_count
+    FROM posts p LEFT JOIN analytics a ON a.post_id = p.id
+    WHERE p.user_id = ? AND p.status = 'published' AND p.published_at IS NOT NULL`;
   const params = [req.user.id];
-  if (platform !== 'all') {
-    sql += ` AND p.account_id IN (SELECT id FROM social_accounts WHERE user_id = ? AND platform = ?)`;
-    params.push(req.user.id, platform);
-  }
+  if (platform !== 'all') { sql += ' AND p.account_id IN (SELECT id FROM social_accounts WHERE user_id = ? AND platform = ?)'; params.push(req.user.id, platform); }
   sql += ' GROUP BY hour, day_of_week ORDER BY avg_engagement DESC';
 
   const data = db.all(sql, params);
-
-  // Best hours (from actual data or defaults for Nepal market)
+  const DAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
   const nepalDefaults = [
-    { hour: '07', day: '1', label: 'Monday morning', score: 85 },
-    { hour: '12', day: '3', label: 'Wednesday noon', score: 90 },
-    { hour: '18', day: '5', label: 'Friday evening', score: 95 },
-    { hour: '19', day: '6', label: 'Saturday evening', score: 88 },
-    { hour: '20', day: '0', label: 'Sunday evening', score: 82 },
+    { hour: '07', day: '1', label: 'Monday morning commute', score: 85 },
+    { hour: '12', day: '3', label: 'Wednesday lunch break', score: 88 },
+    { hour: '18', day: '5', label: 'Friday evening prime time', score: 97 },
+    { hour: '19', day: '6', label: 'Saturday evening', score: 93 },
+    { hour: '20', day: '0', label: 'Sunday family time', score: 82 },
+    { hour: '09', day: '2', label: 'Tuesday morning', score: 78 },
   ];
 
-  const DAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
-
   const bestTimes = data.length >= 3
-    ? data.slice(0, 5).map(d => ({
-        hour: parseInt(d.hour),
-        day: DAYS[parseInt(d.day_of_week)],
-        avg_engagement: Math.round(d.avg_engagement || 0),
-        post_count: d.post_count,
-        label: `${DAYS[parseInt(d.day_of_week)]} at ${d.hour}:00`,
-        score: Math.min(100, Math.round((d.avg_engagement || 0) * 10)),
-      }))
+    ? data.slice(0, 6).map(d => ({ hour: parseInt(d.hour), day: DAYS[parseInt(d.day_of_week)], avg_engagement: Math.round(d.avg_engagement || 0), post_count: d.post_count, label: `${DAYS[parseInt(d.day_of_week)]} at ${d.hour}:00`, score: Math.min(100, Math.round((d.avg_engagement || 0) * 10)) }))
     : nepalDefaults.map(d => ({ ...d, hour: parseInt(d.hour), day: DAYS[parseInt(d.day)], note: 'Nepal market average' }));
 
-  // Heatmap data (24h × 7days grid)
   const heatmap = Array.from({ length: 7 }, (_, day) =>
     Array.from({ length: 24 }, (_, hour) => {
       const found = data.find(d => parseInt(d.hour) === hour && parseInt(d.day_of_week) === day);
@@ -256,103 +510,79 @@ router.get('/best-time', authenticate, (req, res) => {
   ).flat();
 
   res.json({
-    best_times: bestTimes,
-    heatmap,
-    days: DAYS,
-    has_real_data: data.length >= 3,
+    best_times: bestTimes, heatmap, days: DAYS, has_real_data: data.length >= 3, grok_available: !!grokClient,
     tips: [
-      'Post between 6-9 AM when Nepali users start their day',
-      'Evening posts (6-9 PM) get 40% more engagement in Nepal',
+      'Post between 6–9 AM when Nepali users start their day with chai ☕',
+      'Evening posts (6–9 PM) get 40% more engagement in Nepal',
       'Friday and Saturday evenings are peak times for Nepali social media',
-      'Avoid posting between 2-5 AM (very low activity)',
-      'Festival days see 3x normal engagement — plan ahead!',
+      'Festival days see 3× normal engagement — schedule content in advance!',
+      'Avoid posting between 2–5 AM (very low activity in Nepal)',
     ],
   });
 });
 
-// GET /api/ai/history — AI generation history
+// ─── GET /api/ai/history ──────────────────────────────────────────────────────
 router.get('/history', authenticate, (req, res) => {
   const limit = Math.min(parseInt(req.query.limit) || 10, 50);
   const generations = db.all(
     'SELECT id, prompt, result, platform, tone, used, created_at FROM ai_generations WHERE user_id = ? ORDER BY created_at DESC LIMIT ?',
     [req.user.id, limit]
   );
-  res.json({ generations });
+  res.json({ generations, grok_available: !!grokClient });
 });
 
-// GET /api/ai/insights — smart performance insights
-router.get('/insights', authenticate, (req, res) => {
+// ─── GET /api/ai/insights ─────────────────────────────────────────────────────
+router.get('/insights', authenticate, async (req, res) => {
   const days = parseInt(req.query.days) || 30;
-
-  const totalPosts = db.get(
-    "SELECT COUNT(*) as count FROM posts WHERE user_id = ? AND created_at >= datetime('now', ?)",
-    [req.user.id, `-${days} days`]
-  );
-  const publishedPosts = db.get(
-    "SELECT COUNT(*) as count FROM posts WHERE user_id = ? AND status = 'published' AND published_at >= datetime('now', ?)",
-    [req.user.id, `-${days} days`]
-  );
-  const failedPosts = db.get(
-    "SELECT COUNT(*) as count FROM posts WHERE user_id = ? AND status = 'failed' AND updated_at >= datetime('now', ?)",
-    [req.user.id, `-${days} days`]
-  );
-  const avgEngagement = db.get(
-    `SELECT AVG(a.likes_count + a.comments_count + a.shares_count) as avg_eng
-     FROM analytics a
-     JOIN posts p ON a.post_id = p.id
-     WHERE p.user_id = ? AND p.published_at >= datetime('now', ?)`,
-    [req.user.id, `-${days} days`]
-  );
-  const topHashtag = db.get(
-    'SELECT hashtag, avg_likes FROM hashtag_stats WHERE user_id = ? ORDER BY avg_likes DESC LIMIT 1',
-    [req.user.id]
-  );
-  const inboxUnread = db.get(
-    `SELECT COUNT(*) as count FROM comments c
-     JOIN social_accounts sa ON c.account_id = sa.id
-     WHERE sa.user_id = ? AND c.is_read = 0`,
-    [req.user.id]
-  );
+  const total = db.get("SELECT COUNT(*) as count FROM posts WHERE user_id = ? AND created_at >= datetime('now', ?)", [req.user.id, `-${days} days`])?.count || 0;
+  const published = db.get("SELECT COUNT(*) as count FROM posts WHERE user_id = ? AND status = 'published' AND published_at >= datetime('now', ?)", [req.user.id, `-${days} days`])?.count || 0;
+  const failed = db.get("SELECT COUNT(*) as count FROM posts WHERE user_id = ? AND status = 'failed' AND updated_at >= datetime('now', ?)", [req.user.id, `-${days} days`])?.count || 0;
+  const avgEng = Math.round(db.get(`SELECT AVG(a.likes_count + a.comments_count + a.shares_count) as avg_eng FROM analytics a JOIN posts p ON a.post_id = p.id WHERE p.user_id = ? AND p.published_at >= datetime('now', ?)`, [req.user.id, `-${days} days`])?.avg_eng || 0);
+  const topHashtag = db.get('SELECT hashtag, avg_likes FROM hashtag_stats WHERE user_id = ? ORDER BY avg_likes DESC LIMIT 1', [req.user.id]);
+  const unread = db.get(`SELECT COUNT(*) as count FROM comments c JOIN social_accounts sa ON c.account_id = sa.id WHERE sa.user_id = ? AND c.is_read = 0`, [req.user.id])?.count || 0;
 
   const insights = [];
-  const published = publishedPosts?.count || 0;
-  const total = totalPosts?.count || 0;
-  const failed = failedPosts?.count || 0;
-  const unread = inboxUnread?.count || 0;
-  const avgEng = Math.round(avgEngagement?.avg_eng || 0);
-
   if (total === 0) {
-    insights.push({ type: 'info', icon: '🚀', title: 'Get Started', message: 'Schedule your first post to start seeing insights and performance data.' });
+    insights.push({ type: 'info', icon: '🚀', title: 'Get Started', message: 'Schedule your first post to start seeing insights.' });
   } else {
-    if (published / Math.max(total, 1) < 0.5) {
-      insights.push({ type: 'warning', icon: '⚠️', title: 'Low Publishing Rate', message: `Only ${published} of ${total} posts were published. Check for failed posts and fix token issues.` });
-    }
-    if (failed > 2) {
-      insights.push({ type: 'error', icon: '🔴', title: 'Posts Failing', message: `${failed} posts failed to publish. Your social account tokens may have expired — reconnect your accounts.` });
-    }
-    if (published >= 5 && avgEng > 0) {
-      insights.push({ type: 'success', icon: '📈', title: 'Engagement Stats', message: `Your posts average ${avgEng} engagements. ${avgEng > 10 ? 'Great job!' : 'Try more engaging content.'}` });
-    }
-    if (unread > 5) {
-      insights.push({ type: 'warning', icon: '💬', title: 'Unread Messages', message: `You have ${unread} unread messages. Responding quickly improves engagement by up to 40%!` });
-    }
-    if (topHashtag) {
-      insights.push({ type: 'info', icon: '🏷️', title: 'Best Hashtag', message: `"${topHashtag.hashtag}" is your top performer with ${Math.round(topHashtag.avg_likes)} avg likes. Use it more!` });
-    }
-    if (published >= 10) {
-      insights.push({ type: 'success', icon: '🌟', title: 'Consistency Champion', message: `You've published ${published} posts in ${days} days. Consistent posting grows audiences 3x faster!` });
-    }
+    if (published / Math.max(total, 1) < 0.5) insights.push({ type: 'warning', icon: '⚠️', title: 'Low Publishing Rate', message: `Only ${published} of ${total} posts published. Check for failed posts.` });
+    if (failed > 2) insights.push({ type: 'error', icon: '🔴', title: 'Posts Failing', message: `${failed} posts failed. Social account tokens may have expired — reconnect accounts.` });
+    if (published >= 5 && avgEng > 0) insights.push({ type: 'success', icon: '📈', title: 'Engagement Stats', message: `Your posts average ${avgEng} engagements. ${avgEng > 10 ? 'Excellent!' : 'Try questions or polls for more engagement.'}` });
+    if (unread > 5) insights.push({ type: 'warning', icon: '💬', title: 'Unread Messages', message: `You have ${unread} unread messages. Fast replies boost engagement by 40%!` });
+    if (topHashtag) insights.push({ type: 'info', icon: '🏷️', title: 'Best Hashtag', message: `"${topHashtag.hashtag}" averages ${Math.round(topHashtag.avg_likes)} likes. Use it consistently!` });
+    if (published >= 10) insights.push({ type: 'success', icon: '🌟', title: 'Consistency Champion', message: `${published} posts in ${days} days! Consistent posting grows audiences 3× faster.` });
+  }
+
+  // Grok-powered tip
+  if (grokClient && published >= 3) {
+    try {
+      const tip = await callGrok(
+        'You are a social media growth expert for Nepal market. Give concise, specific, actionable advice.',
+        `Performance last ${days} days: ${published} posts, ${failed} failed, ${avgEng} avg engagement, ${unread} unread messages.
+Give ONE specific actionable tip (max 2 sentences) for a Nepali business to improve right now.`,
+        { temperature: 0.7, maxTokens: 120 }
+      );
+      if (tip) insights.unshift({ type: 'ai', icon: '🤖', title: 'Grok AI Insight', message: tip });
+    } catch { /* silent */ }
   }
 
   res.json({
     insights,
-    summary: {
-      total_posts: total,
-      published,
-      failed,
-      avg_engagement: avgEng,
-      unread_messages: unread,
-      best_hashtag: topHashtag?.hashtag || null,
+    summary: { total_posts: total, published, failed, avg_engagement: avgEng, unread_messages: unread, best_hashtag: topHashtag?.hashtag || null },
+    grok_available: !!grokClient,
+    grok_model: GROK_MODEL,
+  });
+});
+
+// ─── GET /api/ai/status ───────────────────────────────────────────────────────
+router.get('/status', authenticate, (req, res) => {
+  res.json({
+    grok_available: !!grokClient,
+    model: GROK_MODEL,
+    features: {
+      generate: true, rewrite: !!grokClient, hashtags: true,
+      reply_suggestion: true, translate: !!grokClient, caption: !!grokClient,
+      auto_responder_suggestion: true, best_time: true, insights: true,
     },
   });
 });
