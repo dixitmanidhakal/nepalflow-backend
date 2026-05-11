@@ -23,6 +23,14 @@ export function generateToken(user: User): string {
 /**
  * Verify JWT and attach user to request
  */
+export function verifyToken(token: string): { id: string; email: string; language: string } | null {
+  try {
+    return jwt.verify(token, JWT_SECRET) as { id: string; email: string; language: string };
+  } catch {
+    return null;
+  }
+}
+
 export function authenticate(req: Request, res: Response, next: NextFunction): void {
   const authHeader = req.headers.authorization;
   if (!authHeader || !authHeader.startsWith('Bearer ')) {

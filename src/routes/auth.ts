@@ -6,7 +6,8 @@ import passport from 'passport';
 import { v4 as uuidv4 } from 'uuid';
 import axios from 'axios';
 import db from '../db/database';
-import { generateToken, authenticate } from '../middleware/auth';
+import { generateToken, authenticate, verifyToken } from '../middleware/auth';
+import * as facebookService from '../services/facebookService';
 import { User } from '../types';
 
 const router = express.Router();
@@ -135,6 +136,150 @@ router.post('/facebook/token', async (req: Request, res: Response) => {
     const error = err as Error;
     console.error('Facebook token exchange error:', error.message);
     res.status(500).json({ error: 'Facebook authentication failed: ' + error.message });
+  }
+});
+
+// ─── FACEBOOK PAGE CONNECT (for already-logged-in users) ────────────────────
+// Initiates Facebook OAuth with page-management scopes.
+// The user's JWT is passed as the OAuth state so the callback knows who to link pages to.
+router.get('/facebook/connect', (req: Request, res: Response) => {
+  const { token } = req.query as { token?: string };
+  const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+  const fbAppId = process.env.FACEBOOK_APP_ID;
+
+  const sendError = (msg: string) => res.send(`
+    <script>
+      if (window.opener) {
+        window.opener.postMessage({ type: 'OAUTH_ERROR', provider: 'facebook', message: ${JSON.stringify(msg)} }, ${JSON.stringify(frontendUrl)});
+        window.close();
+      } else {
+        window.location.href = ${JSON.stringify(frontendUrl)};
+      }
+    </script>
+  `);
+
+  if (!fbAppId || fbAppId === 'your_facebook_app_id_here') {
+    return sendError('Facebook app credentials not configured. Add FACEBOOK_APP_ID and FACEBOOK_APP_SECRET to your .env file.');
+  }
+  if (!token || !verifyToken(token)) {
+    return sendError('Your session is invalid. Please log in again.');
+  }
+
+  const backendUrl = process.env.BACKEND_URL || 'http://localhost:5001';
+  const redirectUri = encodeURIComponent(`${backendUrl}/auth/facebook/connect/callback`);
+  const scope = encodeURIComponent(
+    'email,public_profile,pages_show_list,pages_read_engagement,pages_manage_posts,pages_messaging,instagram_basic,instagram_content_publish,instagram_manage_comments'
+  );
+  res.redirect(
+    `https://www.facebook.com/v19.0/dialog/oauth?client_id=${fbAppId}&redirect_uri=${redirectUri}&scope=${scope}&response_type=code&state=${encodeURIComponent(token)}`
+  );
+});
+
+router.get('/facebook/connect/callback', async (req: Request, res: Response) => {
+  const { code, state, error } = req.query as { code?: string; state?: string; error?: string };
+  const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+
+  const sendError = (msg: string) => res.send(`
+    <script>
+      if (window.opener) {
+        window.opener.postMessage({ type: 'OAUTH_ERROR', provider: 'facebook', message: ${JSON.stringify(msg)} }, ${JSON.stringify(frontendUrl)});
+        window.close();
+      } else {
+        window.location.href = ${JSON.stringify(frontendUrl + '/accounts')};
+      }
+    </script>
+  `);
+
+  if (error) return sendError('Facebook connection was denied. Please try again.');
+  if (!code || !state) return sendError('Missing required parameters from Facebook.');
+
+  try {
+    // 1. Verify the JWT from state to identify the user
+    const userToken = decodeURIComponent(state);
+    const decoded = verifyToken(userToken);
+    if (!decoded) return sendError('Session expired. Please log in again.');
+
+    const user = db.get<User>('SELECT * FROM users WHERE id = ?', [decoded.id]);
+    if (!user) return sendError('User not found.');
+
+    // 2. Exchange authorization code for a short-lived user access token
+    const backendUrl = process.env.BACKEND_URL || 'http://localhost:5001';
+    const tokenRes = await axios.get('https://graph.facebook.com/v19.0/oauth/access_token', {
+      params: {
+        client_id: process.env.FACEBOOK_APP_ID,
+        client_secret: process.env.FACEBOOK_APP_SECRET,
+        redirect_uri: `${backendUrl}/auth/facebook/connect/callback`,
+        code,
+      },
+    });
+    const { access_token: shortLivedToken } = tokenRes.data as { access_token: string };
+
+    // 3. Exchange for a long-lived user token (60-day expiry)
+    let userAccessToken = shortLivedToken;
+    try { userAccessToken = await facebookService.getLongLivedToken(shortLivedToken); } catch (_) {}
+
+    // 4. Fetch all pages the user manages
+    const pages = await facebookService.getUserPages(userAccessToken) as Array<{
+      id: string;
+      name: string;
+      access_token: string;
+      picture?: { data?: { url?: string } };
+      instagram_business_account?: { id: string };
+    }>;
+
+    // 5. Upsert each page (and linked Instagram account) into social_accounts
+    let connected = 0;
+    for (const page of pages) {
+      let pageToken = page.access_token;
+      try { pageToken = await facebookService.getLongLivedToken(pageToken); } catch (_) {}
+
+      const existing = db.get<{ id: string }>(
+        "SELECT id FROM social_accounts WHERE user_id = ? AND platform = 'facebook' AND account_id = ?",
+        [user.id, page.id]
+      );
+      if (existing) {
+        db.run('UPDATE social_accounts SET access_token = ?, is_active = 1 WHERE id = ?', [pageToken, existing.id]);
+      } else {
+        db.run(
+          "INSERT INTO social_accounts (id, user_id, platform, account_id, account_name, access_token, profile_pic) VALUES (?, ?, 'facebook', ?, ?, ?, ?)",
+          [uuidv4(), user.id, page.id, page.name, pageToken, page.picture?.data?.url || null]
+        );
+        connected++;
+      }
+
+      if (page.instagram_business_account) {
+        const igId = page.instagram_business_account.id;
+        const igExisting = db.get<{ id: string }>(
+          "SELECT id FROM social_accounts WHERE user_id = ? AND platform = 'instagram' AND account_id = ?",
+          [user.id, igId]
+        );
+        if (!igExisting) {
+          db.run(
+            "INSERT INTO social_accounts (id, user_id, platform, account_id, account_name, access_token) VALUES (?, ?, 'instagram', ?, ?, ?)",
+            [uuidv4(), user.id, igId, `${page.name} (Instagram)`, pageToken]
+          );
+          connected++;
+        }
+      }
+    }
+
+    // 6. Send success back to the popup with a fresh JWT
+    const newToken = generateToken(user);
+    const safeToken = JSON.stringify(newToken);
+    res.send(`
+      <script>
+        if (window.opener) {
+          window.opener.postMessage({ type: 'OAUTH_SUCCESS', token: ${safeToken}, provider: 'facebook', pagesConnected: ${pages.length} }, ${JSON.stringify(frontendUrl)});
+          window.close();
+        } else {
+          window.location.href = ${JSON.stringify(frontendUrl + '/accounts')};
+        }
+      </script>
+    `);
+  } catch (err: unknown) {
+    const e = err as Error;
+    console.error('Facebook connect/callback error:', e.message);
+    return sendError('Failed to connect Facebook pages: ' + e.message);
   }
 });
 
