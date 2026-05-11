@@ -1,45 +1,46 @@
 /**
  * Bulk Post Queue Routes
- * GET    /api/queue            - list queue items
- * POST   /api/queue            - add item to queue
- * POST   /api/queue/bulk       - add multiple items (JSON array)
- * PATCH  /api/queue/:id        - update queue item
- * DELETE /api/queue/:id        - remove from queue
- * POST   /api/queue/publish-all - convert all queued → posts
- * DELETE /api/queue/clear       - clear entire queue
  */
-const express = require('express');
-const router = express.Router();
-const { v4: uuidv4 } = require('uuid');
-const db = require('../db/database');
-const { authenticate } = require('../middleware/auth');
+import express, { Request, Response } from 'express';
+import { v4 as uuidv4 } from 'uuid';
+import db from '../db/database';
+import { authenticate } from '../middleware/auth';
+import { PostQueue } from '../types';
 
-function tryParse(s, fb) { try { return JSON.parse(s); } catch { return fb; } }
+const router = express.Router();
+
+function tryParse<T>(s: string, fb: T): T { try { return JSON.parse(s) as T; } catch { return fb; } }
 
 // GET /api/queue
-router.get('/', authenticate, (req, res) => {
-  const { status = 'queued' } = req.query;
-  const items = db.all(
+router.get('/', authenticate, (req: Request, res: Response) => {
+  const { status = 'queued' } = req.query as { status?: string };
+  const items = db.all<PostQueue>(
     `SELECT q.*, sa.account_name, sa.platform, sa.profile_pic
      FROM post_queue q
      LEFT JOIN social_accounts sa ON q.account_id = sa.id
      WHERE q.user_id = ? ${status ? 'AND q.status = ?' : ''}
      ORDER BY q.scheduled_at ASC`,
-    status ? [req.user.id, status] : [req.user.id]
+    status ? [req.user!.id, status] : [req.user!.id]
   );
-  const counts = db.all(
+  const counts = db.all<{ status: string; count: number }>(
     'SELECT status, COUNT(*) as count FROM post_queue WHERE user_id = ? GROUP BY status',
-    [req.user.id]
+    [req.user!.id]
   );
   res.json({
-    items: items.map(i => ({ ...i, media_urls: tryParse(i.media_urls, []), hashtags: tryParse(i.hashtags, []) })),
+    items: items.map(i => ({ ...i, media_urls: tryParse<string[]>(i.media_urls, []), hashtags: tryParse<string[]>(i.hashtags, []) })),
     counts: Object.fromEntries(counts.map(c => [c.status, c.count])),
   });
 });
 
-// POST /api/queue — add single item
-router.post('/', authenticate, (req, res) => {
-  const { account_id, content, media_urls = [], hashtags = [], scheduled_at } = req.body;
+// POST /api/queue
+router.post('/', authenticate, (req: Request, res: Response) => {
+  const { account_id, content, media_urls = [], hashtags = [], scheduled_at } = req.body as {
+    account_id?: string;
+    content?: string;
+    media_urls?: string[];
+    hashtags?: string[];
+    scheduled_at?: string;
+  };
   if (!account_id) return res.status(400).json({ error: 'Account is required' });
   if (!content?.trim()) return res.status(400).json({ error: 'Content is required' });
   if (!scheduled_at) return res.status(400).json({ error: 'Scheduled time is required' });
@@ -47,15 +48,23 @@ router.post('/', authenticate, (req, res) => {
   const id = uuidv4();
   db.run(
     'INSERT INTO post_queue (id, user_id, account_id, content, media_urls, hashtags, scheduled_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
-    [id, req.user.id, account_id, content.trim(), JSON.stringify(media_urls), JSON.stringify(hashtags), new Date(scheduled_at).toISOString()]
+    [id, req.user!.id, account_id, content.trim(), JSON.stringify(media_urls), JSON.stringify(hashtags), new Date(scheduled_at).toISOString()]
   );
   const item = db.get('SELECT * FROM post_queue WHERE id = ?', [id]);
   res.status(201).json({ item });
 });
 
-// POST /api/queue/bulk — add multiple items at once
-router.post('/bulk', authenticate, (req, res) => {
-  const { items } = req.body;
+// POST /api/queue/bulk
+router.post('/bulk', authenticate, (req: Request, res: Response) => {
+  const { items } = req.body as {
+    items?: Array<{
+      account_id?: string;
+      content?: string;
+      scheduled_at?: string;
+      media_urls?: string[];
+      hashtags?: string[];
+    }>;
+  };
   if (!Array.isArray(items) || items.length === 0) {
     return res.status(400).json({ error: 'Items array is required' });
   }
@@ -63,8 +72,8 @@ router.post('/bulk', authenticate, (req, res) => {
     return res.status(400).json({ error: 'Maximum 100 items per bulk upload' });
   }
 
-  const created = [];
-  const errors = [];
+  const created: string[] = [];
+  const errors: Array<{ index: number; error: string }> = [];
 
   for (let i = 0; i < items.length; i++) {
     const item = items[i];
@@ -76,14 +85,14 @@ router.post('/bulk', authenticate, (req, res) => {
     try {
       db.run(
         'INSERT INTO post_queue (id, user_id, account_id, content, media_urls, hashtags, scheduled_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
-        [id, req.user.id, item.account_id, item.content.trim(),
+        [id, req.user!.id, item.account_id, item.content.trim(),
          JSON.stringify(item.media_urls || []),
          JSON.stringify(item.hashtags || []),
          new Date(item.scheduled_at).toISOString()]
       );
       created.push(id);
-    } catch (err) {
-      errors.push({ index: i, error: err.message });
+    } catch (err: unknown) {
+      errors.push({ index: i, error: (err as Error).message });
     }
   }
 
@@ -96,11 +105,18 @@ router.post('/bulk', authenticate, (req, res) => {
 });
 
 // PATCH /api/queue/:id
-router.patch('/:id', authenticate, (req, res) => {
-  const item = db.get('SELECT id FROM post_queue WHERE id = ? AND user_id = ? AND status = ?', [req.params.id, req.user.id, 'queued']);
+router.patch('/:id', authenticate, (req: Request, res: Response) => {
+  const item = db.get('SELECT id FROM post_queue WHERE id = ? AND user_id = ? AND status = ?', [req.params.id, req.user!.id, 'queued']);
   if (!item) return res.status(404).json({ error: 'Queue item not found or not editable' });
-  const { content, scheduled_at, account_id, hashtags, media_urls } = req.body;
-  const updates = []; const params = [];
+  const { content, scheduled_at, account_id, hashtags, media_urls } = req.body as {
+    content?: string;
+    scheduled_at?: string;
+    account_id?: string;
+    hashtags?: string[];
+    media_urls?: string[];
+  };
+  const updates: string[] = [];
+  const params: unknown[] = [];
   if (content !== undefined)      { updates.push('content = ?');      params.push(content); }
   if (scheduled_at !== undefined) { updates.push('scheduled_at = ?'); params.push(new Date(scheduled_at).toISOString()); }
   if (account_id !== undefined)   { updates.push('account_id = ?');   params.push(account_id); }
@@ -114,47 +130,47 @@ router.patch('/:id', authenticate, (req, res) => {
 });
 
 // DELETE /api/queue/:id
-router.delete('/:id', authenticate, (req, res) => {
-  db.run('DELETE FROM post_queue WHERE id = ? AND user_id = ?', [req.params.id, req.user.id]);
+router.delete('/:id', authenticate, (req: Request, res: Response) => {
+  db.run('DELETE FROM post_queue WHERE id = ? AND user_id = ?', [req.params.id, req.user!.id]);
   res.json({ success: true });
 });
 
-// POST /api/queue/publish-all — convert all queued items into actual posts
-router.post('/publish-all', authenticate, (req, res) => {
-  const items = db.all(
+// POST /api/queue/publish-all
+router.post('/publish-all', authenticate, (req: Request, res: Response) => {
+  const items = db.all<PostQueue>(
     "SELECT * FROM post_queue WHERE user_id = ? AND status = 'queued'",
-    [req.user.id]
+    [req.user!.id]
   );
   if (items.length === 0) return res.status(400).json({ error: 'No queued items to publish' });
 
   let created = 0;
   for (const item of items) {
     const postId = uuidv4();
-    const hashtags = tryParse(item.hashtags, []);
-    const mediaUrls = tryParse(item.media_urls, []);
+    const hashtags = tryParse<string[]>(item.hashtags, []);
+    const mediaUrls = tryParse<string[]>(item.media_urls, []);
     let content = item.content;
     if (hashtags.length) content += '\n\n' + hashtags.join(' ');
     try {
       db.run(
         `INSERT INTO posts (id, user_id, account_id, content, media_urls, hashtags, scheduled_at, status)
          VALUES (?, ?, ?, ?, ?, ?, ?, 'scheduled')`,
-        [postId, req.user.id, item.account_id, content, JSON.stringify(mediaUrls), JSON.stringify(hashtags), item.scheduled_at]
+        [postId, req.user!.id, item.account_id, content, JSON.stringify(mediaUrls), JSON.stringify(hashtags), item.scheduled_at]
       );
       db.run('UPDATE post_queue SET status = ?, post_id = ? WHERE id = ?', ['published', postId, item.id]);
       created++;
-    } catch (err) {
-      db.run('UPDATE post_queue SET status = ?, error = ? WHERE id = ?', ['error', err.message, item.id]);
+    } catch (err: unknown) {
+      db.run('UPDATE post_queue SET status = ?, error = ? WHERE id = ?', ['error', (err as Error).message, item.id]);
     }
   }
 
   res.json({ created, total: items.length, message: `${created} posts scheduled from queue` });
 });
 
-// DELETE /api/queue/clear — clear all queued items
-router.delete('/clear', authenticate, (req, res) => {
-  const { status = 'queued' } = req.query;
-  db.run('DELETE FROM post_queue WHERE user_id = ? AND status = ?', [req.user.id, status]);
+// DELETE /api/queue/clear
+router.delete('/clear', authenticate, (req: Request, res: Response) => {
+  const { status = 'queued' } = req.query as { status?: string };
+  db.run('DELETE FROM post_queue WHERE user_id = ? AND status = ?', [req.user!.id, status]);
   res.json({ success: true });
 });
 
-module.exports = router;
+export default router;

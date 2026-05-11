@@ -3,12 +3,25 @@
  * Social Media Automation Tool for Nepali SMBs
  */
 
-require('dotenv').config();
-const express = require('express');
-const cors = require('cors');
-const helmet = require('helmet');
-const rateLimit = require('express-rate-limit');
-const passport = require('passport');
+import 'dotenv/config';
+import express, { Request, Response, NextFunction } from 'express';
+import cors from 'cors';
+import helmet from 'helmet';
+import rateLimit from 'express-rate-limit';
+import passport from 'passport';
+
+import configurePassport from './config/passport';
+import authRouter from './routes/auth';
+import accountsRouter from './routes/accounts';
+import postsRouter from './routes/posts';
+import inboxRouter from './routes/inbox';
+import analyticsRouter from './routes/analytics';
+import templatesRouter from './routes/templates';
+import autorespondersRouter from './routes/autoresponders';
+import notificationsRouter from './routes/notifications';
+import rssRouter from './routes/rss';
+import aiRouter from './routes/ai';
+import queueRouter from './routes/queue';
 
 const app = express();
 const PORT = process.env.PORT || 5001;
@@ -31,26 +44,26 @@ const limiter = rateLimit({
 app.use('/api', limiter);
 
 // ─── Passport OAuth Setup ────────────────────────────────────────────────────
-require('./config/passport')(passport);
+configurePassport(passport);
 app.use(passport.initialize());
 
 // ─── Core Routes ─────────────────────────────────────────────────────────────
-app.use('/auth',                   require('./routes/auth'));
-app.use('/api/accounts',           require('./routes/accounts'));
-app.use('/api/posts',              require('./routes/posts'));
-app.use('/api/inbox',              require('./routes/inbox'));
-app.use('/api/analytics',          require('./routes/analytics'));
+app.use('/auth',                   authRouter);
+app.use('/api/accounts',           accountsRouter);
+app.use('/api/posts',              postsRouter);
+app.use('/api/inbox',              inboxRouter);
+app.use('/api/analytics',          analyticsRouter);
 
 // ─── New Feature Routes ───────────────────────────────────────────────────────
-app.use('/api/templates',          require('./routes/templates'));
-app.use('/api/auto-responders',    require('./routes/autoresponders'));
-app.use('/api/notifications',      require('./routes/notifications'));
-app.use('/api/rss',                require('./routes/rss'));
-app.use('/api/ai',                 require('./routes/ai'));
-app.use('/api/queue',              require('./routes/queue'));
+app.use('/api/templates',          templatesRouter);
+app.use('/api/auto-responders',    autorespondersRouter);
+app.use('/api/notifications',      notificationsRouter);
+app.use('/api/rss',                rssRouter);
+app.use('/api/ai',                 aiRouter);
+app.use('/api/queue',              queueRouter);
 
 // ─── Health Check ─────────────────────────────────────────────────────────────
-app.get('/health', (req, res) => {
+app.get('/health', (_req: Request, res: Response) => {
   res.json({
     status: 'ok',
     service: 'NepalFlow API',
@@ -61,13 +74,21 @@ app.get('/health', (req, res) => {
 });
 
 // ─── Error Handler ────────────────────────────────────────────────────────────
-app.use((err, req, res, _next) => {
+app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
   console.error('Unhandled error:', err.message);
   res.status(500).json({ error: 'Internal server error' });
 });
 
-app.use((req, res) => {
+app.use((req: Request, res: Response) => {
   res.status(404).json({ error: `Route ${req.path} not found` });
+});
+
+// ─── Prevent silent crashes ───────────────────────────────────────────────────
+process.on('uncaughtException', (err: Error) => {
+  console.error('Uncaught Exception:', err.message, err.stack);
+});
+process.on('unhandledRejection', (reason: unknown) => {
+  console.error('Unhandled Rejection:', reason);
 });
 
 // ─── Start Server & Scheduler ────────────────────────────────────────────────
@@ -81,4 +102,4 @@ app.listen(PORT, () => {
   startScheduler();
 });
 
-module.exports = app;
+export default app;

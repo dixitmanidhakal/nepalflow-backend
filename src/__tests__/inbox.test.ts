@@ -2,8 +2,31 @@
  * Tests: Comment/DM parsing
  */
 
+interface GraphComment {
+  id: string;
+  message: string;
+  from?: { name: string; id: string };
+  created_time: string;
+}
+
+interface GraphPost {
+  id: string;
+  message: string;
+  comments?: { data: GraphComment[] };
+}
+
+interface ParsedComment {
+  platform_comment_id: string;
+  post_platform_id: string;
+  commenter_name: string;
+  commenter_id?: string;
+  message: string;
+  comment_type: string;
+  platform_time: string;
+}
+
 describe('Inbox - Comment Parsing', () => {
-  const sampleGraphResponse = {
+  const sampleGraphResponse: { data: GraphPost[] } = {
     data: [
       {
         id: 'page_post_1',
@@ -29,7 +52,7 @@ describe('Inbox - Comment Parsing', () => {
   };
 
   it('should parse comments from Graph API response', () => {
-    const comments = [];
+    const comments: ParsedComment[] = [];
     for (const post of sampleGraphResponse.data) {
       for (const comment of post.comments?.data || []) {
         comments.push({
@@ -57,7 +80,7 @@ describe('Inbox - Comment Parsing', () => {
   });
 
   it('should handle missing from field gracefully', () => {
-    const commentWithNoFrom = {
+    const commentWithNoFrom: GraphComment = {
       id: 'comment_xyz',
       message: 'Anonymous comment',
       from: undefined,

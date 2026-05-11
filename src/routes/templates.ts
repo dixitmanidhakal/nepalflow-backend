@@ -1,25 +1,33 @@
 /**
  * Content Templates Routes
- * GET    /api/templates         - list templates
- * POST   /api/templates         - create template
- * GET    /api/templates/:id     - get one
- * PUT    /api/templates/:id     - update
- * DELETE /api/templates/:id     - delete
- * POST   /api/templates/:id/use - record usage, returns content
  */
-const express = require('express');
+import express, { Request, Response } from 'express';
+import { v4 as uuidv4 } from 'uuid';
+import db from '../db/database';
+import { authenticate } from '../middleware/auth';
+import { Template } from '../types';
+
 const router = express.Router();
-const { v4: uuidv4 } = require('uuid');
-const db = require('../db/database');
-const { authenticate } = require('../middleware/auth');
 
 const CATEGORIES = ['general', 'promotion', 'product', 'event', 'festival', 'announcement', 'tip', 'quote', 'story'];
 
+function tryParse<T>(str: string, fallback: T): T {
+  try { return JSON.parse(str) as T; } catch { return fallback; }
+}
+
+function parseTemplate(t: Template): Omit<Template, 'platforms' | 'hashtags'> & { platforms: string[]; hashtags: string[] } {
+  return {
+    ...t,
+    platforms: tryParse<string[]>(t.platforms, ['facebook', 'instagram']),
+    hashtags: tryParse<string[]>(t.hashtags, []),
+  };
+}
+
 // GET /api/templates
-router.get('/', authenticate, (req, res) => {
-  const { category, search, platform } = req.query;
+router.get('/', authenticate, (req: Request, res: Response) => {
+  const { category, search, platform } = req.query as Record<string, string | undefined>;
   let sql = 'SELECT * FROM templates WHERE user_id = ?';
-  const params = [req.user.id];
+  const params: unknown[] = [req.user!.id];
   if (category && CATEGORIES.includes(category)) {
     sql += ' AND category = ?'; params.push(category);
   }
@@ -32,39 +40,53 @@ router.get('/', authenticate, (req, res) => {
     params.push(`%"${platform}"%`, `%${platform}%`);
   }
   sql += ' ORDER BY use_count DESC, updated_at DESC';
-  const templates = db.all(sql, params);
+  const templates = db.all<Template>(sql, params);
   res.json({ templates: templates.map(parseTemplate), categories: CATEGORIES });
 });
 
 // POST /api/templates
-router.post('/', authenticate, (req, res) => {
-  const { name, description = '', content, platforms = ['facebook', 'instagram'], hashtags = [], category = 'general' } = req.body;
+router.post('/', authenticate, (req: Request, res: Response) => {
+  const { name, description = '', content, platforms = ['facebook', 'instagram'], hashtags = [], category = 'general' } = req.body as {
+    name?: string;
+    description?: string;
+    content?: string;
+    platforms?: string[];
+    hashtags?: string[];
+    category?: string;
+  };
   if (!name?.trim()) return res.status(400).json({ error: 'Template name is required' });
   if (!content?.trim()) return res.status(400).json({ error: 'Template content is required' });
   const id = uuidv4();
   db.run(
     'INSERT INTO templates (id, user_id, name, description, content, platforms, hashtags, category) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-    [id, req.user.id, name.trim(), description, content.trim(), JSON.stringify(platforms), JSON.stringify(hashtags), category]
+    [id, req.user!.id, name.trim(), description, content.trim(), JSON.stringify(platforms), JSON.stringify(hashtags), category]
   );
-  const template = db.get('SELECT * FROM templates WHERE id = ?', [id]);
-  res.status(201).json({ template: parseTemplate(template) });
+  const template = db.get<Template>('SELECT * FROM templates WHERE id = ?', [id]);
+  res.status(201).json({ template: parseTemplate(template!) });
 });
 
 // GET /api/templates/:id
-router.get('/:id', authenticate, (req, res) => {
-  const template = db.get('SELECT * FROM templates WHERE id = ? AND user_id = ?', [req.params.id, req.user.id]);
+router.get('/:id', authenticate, (req: Request, res: Response) => {
+  const template = db.get<Template>('SELECT * FROM templates WHERE id = ? AND user_id = ?', [req.params.id, req.user!.id]);
   if (!template) return res.status(404).json({ error: 'Template not found' });
   res.json({ template: parseTemplate(template) });
 });
 
 // PUT /api/templates/:id
-router.put('/:id', authenticate, (req, res) => {
-  const { name, description, content, platforms, hashtags, category } = req.body;
-  const template = db.get('SELECT * FROM templates WHERE id = ? AND user_id = ?', [req.params.id, req.user.id]);
+router.put('/:id', authenticate, (req: Request, res: Response) => {
+  const { name, description, content, platforms, hashtags, category } = req.body as {
+    name?: string;
+    description?: string;
+    content?: string;
+    platforms?: string[];
+    hashtags?: string[];
+    category?: string;
+  };
+  const template = db.get<Template>('SELECT * FROM templates WHERE id = ? AND user_id = ?', [req.params.id, req.user!.id]);
   if (!template) return res.status(404).json({ error: 'Template not found' });
 
-  const updates = [];
-  const params = [];
+  const updates: string[] = [];
+  const params: unknown[] = [];
   if (name !== undefined)        { updates.push('name = ?');        params.push(name); }
   if (description !== undefined) { updates.push('description = ?'); params.push(description); }
   if (content !== undefined)     { updates.push('content = ?');     params.push(content); }
@@ -76,25 +98,24 @@ router.put('/:id', authenticate, (req, res) => {
   updates.push("updated_at = datetime('now')");
   params.push(req.params.id);
   db.run(`UPDATE templates SET ${updates.join(', ')} WHERE id = ?`, params);
-  const updated = db.get('SELECT * FROM templates WHERE id = ?', [req.params.id]);
-  res.json({ template: parseTemplate(updated) });
+  const updated = db.get<Template>('SELECT * FROM templates WHERE id = ?', [req.params.id]);
+  res.json({ template: parseTemplate(updated!) });
 });
 
 // DELETE /api/templates/:id
-router.delete('/:id', authenticate, (req, res) => {
-  const template = db.get('SELECT id FROM templates WHERE id = ? AND user_id = ?', [req.params.id, req.user.id]);
+router.delete('/:id', authenticate, (req: Request, res: Response) => {
+  const template = db.get('SELECT id FROM templates WHERE id = ? AND user_id = ?', [req.params.id, req.user!.id]);
   if (!template) return res.status(404).json({ error: 'Template not found' });
   db.run('DELETE FROM templates WHERE id = ?', [req.params.id]);
   res.json({ success: true });
 });
 
-// POST /api/templates/:id/use — record usage + return rendered content
-router.post('/:id/use', authenticate, (req, res) => {
-  const template = db.get('SELECT * FROM templates WHERE id = ? AND user_id = ?', [req.params.id, req.user.id]);
+// POST /api/templates/:id/use
+router.post('/:id/use', authenticate, (req: Request, res: Response) => {
+  const template = db.get<Template>('SELECT * FROM templates WHERE id = ? AND user_id = ?', [req.params.id, req.user!.id]);
   if (!template) return res.status(404).json({ error: 'Template not found' });
-  const { variables = {} } = req.body;
+  const { variables = {} } = req.body as { variables?: Record<string, string> };
 
-  // Render {{variable}} placeholders
   let rendered = template.content;
   for (const [key, val] of Object.entries(variables)) {
     rendered = rendered.replace(new RegExp(`{{${key}}}`, 'g'), val);
@@ -108,16 +129,4 @@ router.post('/:id/use', authenticate, (req, res) => {
   });
 });
 
-function parseTemplate(t) {
-  return {
-    ...t,
-    platforms: tryParse(t.platforms, ['facebook', 'instagram']),
-    hashtags: tryParse(t.hashtags, []),
-  };
-}
-
-function tryParse(str, fallback) {
-  try { return JSON.parse(str); } catch { return fallback; }
-}
-
-module.exports = router;
+export default router;

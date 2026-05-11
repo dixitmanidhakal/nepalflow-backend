@@ -4,19 +4,47 @@
  * Graph API v19.0
  */
 
-const axios = require('axios');
+import axios from 'axios';
 
 const GRAPH_BASE = 'https://graph.facebook.com/v19.0';
+
+export interface FacebookComment {
+  platform_comment_id: string;
+  post_platform_id: string;
+  commenter_name: string;
+  commenter_id: string | undefined;
+  message: string;
+  comment_type: string;
+  platform_time: string;
+}
+
+export interface FacebookDM {
+  platform_comment_id: string;
+  commenter_name: string;
+  commenter_id: string | undefined;
+  message: string;
+  comment_type: string;
+  platform_time: string;
+}
+
+export interface PostInsights {
+  likes_count: number;
+  comments_count: number;
+  shares_count: number;
+  impressions: number;
+  reach: number;
+}
 
 /**
  * Generic Graph API GET request
  */
-async function graphGet(path, params = {}) {
+async function graphGet(path: string, params: Record<string, unknown> = {}): Promise<Record<string, unknown>> {
   try {
     const response = await axios.get(`${GRAPH_BASE}/${path}`, { params });
     return response.data;
-  } catch (error) {
-    const msg = error.response?.data?.error?.message || error.message;
+  } catch (error: unknown) {
+    const err = error as { response?: { data?: { error?: { message?: string } } }; message?: string };
+    const msg = err.response?.data?.error?.message || err.message;
     throw new Error(`Facebook API Error: ${msg}`);
   }
 }
@@ -24,12 +52,13 @@ async function graphGet(path, params = {}) {
 /**
  * Generic Graph API POST request
  */
-async function graphPost(path, data = {}) {
+async function graphPost(path: string, data: Record<string, unknown> = {}): Promise<Record<string, unknown>> {
   try {
     const response = await axios.post(`${GRAPH_BASE}/${path}`, data);
     return response.data;
-  } catch (error) {
-    const msg = error.response?.data?.error?.message || error.message;
+  } catch (error: unknown) {
+    const err = error as { response?: { data?: { error?: { message?: string } } }; message?: string };
+    const msg = err.response?.data?.error?.message || err.message;
     throw new Error(`Facebook API Error: ${msg}`);
   }
 }
@@ -40,9 +69,19 @@ async function graphPost(path, data = {}) {
 
 /**
  * Publish a text (+ optional image) post to a Facebook Page
- * @returns {string} Platform post ID
+ * @returns Platform post ID
  */
-async function publishToFacebookPage({ pageId, accessToken, message, mediaUrls = [] }) {
+export async function publishToFacebookPage({
+  pageId,
+  accessToken,
+  message,
+  mediaUrls = [],
+}: {
+  pageId: string;
+  accessToken: string;
+  message: string;
+  mediaUrls?: string[];
+}): Promise<string> {
   // Sandbox/mock mode
   if (process.env.NODE_ENV !== 'production' && process.env.FB_SANDBOX === 'true') {
     console.log(`[SANDBOX] Would publish to FB Page ${pageId}: "${message}"`);
@@ -50,19 +89,13 @@ async function publishToFacebookPage({ pageId, accessToken, message, mediaUrls =
   }
 
   if (mediaUrls.length > 0) {
-    // Post with photo
-    const data = {
-      message,
-      url: mediaUrls[0],
-      access_token: accessToken,
-    };
+    const data = { message, url: mediaUrls[0], access_token: accessToken };
     const result = await graphPost(`${pageId}/photos`, data);
-    return result.post_id || result.id;
+    return (result.post_id || result.id) as string;
   } else {
-    // Text-only post
     const data = { message, access_token: accessToken };
     const result = await graphPost(`${pageId}/feed`, data);
-    return result.id;
+    return result.id as string;
   }
 }
 
@@ -72,9 +105,18 @@ async function publishToFacebookPage({ pageId, accessToken, message, mediaUrls =
 
 /**
  * Publish to Instagram Business Account via Graph API
- * Requires: image URL (Instagram requires public URL for media)
  */
-async function publishToInstagram({ igAccountId, accessToken, caption, mediaUrls = [] }) {
+export async function publishToInstagram({
+  igAccountId,
+  accessToken,
+  caption,
+  mediaUrls = [],
+}: {
+  igAccountId: string;
+  accessToken: string;
+  caption: string;
+  mediaUrls?: string[];
+}): Promise<string> {
   if (process.env.NODE_ENV !== 'production' && process.env.FB_SANDBOX === 'true') {
     console.log(`[SANDBOX] Would publish to IG Account ${igAccountId}: "${caption}"`);
     return `mock_ig_post_${Date.now()}`;
@@ -84,22 +126,20 @@ async function publishToInstagram({ igAccountId, accessToken, caption, mediaUrls
     throw new Error('Instagram requires at least one media URL');
   }
 
-  // Step 1: Create media container
   const containerRes = await graphPost(`${igAccountId}/media`, {
     image_url: mediaUrls[0],
     caption,
     access_token: accessToken,
   });
 
-  const containerId = containerRes.id;
+  const containerId = containerRes.id as string;
 
-  // Step 2: Publish the container
   const publishRes = await graphPost(`${igAccountId}/media_publish`, {
     creation_id: containerId,
     access_token: accessToken,
   });
 
-  return publishRes.id;
+  return publishRes.id as string;
 }
 
 // ─────────────────────────────────────────────
@@ -109,8 +149,16 @@ async function publishToInstagram({ igAccountId, accessToken, caption, mediaUrls
 /**
  * Fetch recent comments from all posts on a Facebook Page
  */
-async function fetchPageComments({ pageId, accessToken, since = null }) {
-  const params = {
+export async function fetchPageComments({
+  pageId,
+  accessToken,
+  since = null,
+}: {
+  pageId: string;
+  accessToken: string;
+  since?: string | null;
+}): Promise<FacebookComment[]> {
+  const params: Record<string, unknown> = {
     access_token: accessToken,
     fields: 'id,message,from,created_time,can_reply_privately',
     limit: 50,
@@ -118,9 +166,14 @@ async function fetchPageComments({ pageId, accessToken, since = null }) {
   if (since) params.since = since;
 
   const result = await graphGet(`${pageId}/feed`, params);
-  const comments = [];
+  const comments: FacebookComment[] = [];
 
-  for (const post of (result.data || [])) {
+  const posts = result.data as Array<{
+    id: string;
+    comments?: { data: Array<{ id: string; from?: { name?: string; id?: string }; message: string; created_time: string }> };
+  }>;
+
+  for (const post of (posts || [])) {
     if (post.comments) {
       for (const comment of post.comments.data || []) {
         comments.push({
@@ -142,17 +195,28 @@ async function fetchPageComments({ pageId, accessToken, since = null }) {
 /**
  * Fetch DMs (Conversations) from a Facebook Page
  */
-async function fetchPageDMs({ pageId, accessToken }) {
-  const params = {
+export async function fetchPageDMs({
+  pageId,
+  accessToken,
+}: {
+  pageId: string;
+  accessToken: string;
+}): Promise<FacebookDM[]> {
+  const params: Record<string, unknown> = {
     access_token: accessToken,
     fields: 'id,participants,messages{message,from,created_time}',
     limit: 25,
   };
 
   const result = await graphGet(`${pageId}/conversations`, params);
-  const dms = [];
+  const dms: FacebookDM[] = [];
 
-  for (const convo of (result.data || [])) {
+  const convos = result.data as Array<{
+    messages?: { data: Array<{ id: string; from?: { id?: string; name?: string }; message: string; created_time: string }> };
+    participants?: { data: Array<{ id: string; name?: string }> };
+  }>;
+
+  for (const convo of (convos || [])) {
     const msgs = convo.messages?.data || [];
     const participant = convo.participants?.data?.find(p => p.id !== pageId);
 
@@ -176,7 +240,15 @@ async function fetchPageDMs({ pageId, accessToken }) {
 /**
  * Reply to a comment on Facebook
  */
-async function replyToComment({ commentId, message, accessToken }) {
+export async function replyToComment({
+  commentId,
+  message,
+  accessToken,
+}: {
+  commentId: string;
+  message: string;
+  accessToken: string;
+}): Promise<Record<string, unknown>> {
   if (process.env.FB_SANDBOX === 'true') {
     console.log(`[SANDBOX] Would reply to comment ${commentId}: "${message}"`);
     return { success: true, mock: true };
@@ -196,19 +268,32 @@ async function replyToComment({ commentId, message, accessToken }) {
 /**
  * Fetch post-level insights from Facebook
  */
-async function fetchPostInsights({ postId, accessToken }) {
+export async function fetchPostInsights({
+  postId,
+  accessToken,
+}: {
+  postId: string;
+  accessToken: string;
+}): Promise<PostInsights> {
   try {
     const result = await graphGet(`${postId}`, {
       access_token: accessToken,
       fields: 'likes.summary(true),comments.summary(true),shares,insights.metric(post_impressions,post_reach)',
     });
 
+    const r = result as {
+      likes?: { summary?: { total_count?: number } };
+      comments?: { summary?: { total_count?: number } };
+      shares?: { count?: number };
+      insights?: { data?: Array<{ name: string; values?: Array<{ value?: number }> }> };
+    };
+
     return {
-      likes_count: result.likes?.summary?.total_count || 0,
-      comments_count: result.comments?.summary?.total_count || 0,
-      shares_count: result.shares?.count || 0,
-      impressions: result.insights?.data?.find(m => m.name === 'post_impressions')?.values?.[0]?.value || 0,
-      reach: result.insights?.data?.find(m => m.name === 'post_reach')?.values?.[0]?.value || 0,
+      likes_count: r.likes?.summary?.total_count || 0,
+      comments_count: r.comments?.summary?.total_count || 0,
+      shares_count: r.shares?.count || 0,
+      impressions: r.insights?.data?.find(m => m.name === 'post_impressions')?.values?.[0]?.value || 0,
+      reach: r.insights?.data?.find(m => m.name === 'post_reach')?.values?.[0]?.value || 0,
     };
   } catch {
     return { likes_count: 0, comments_count: 0, shares_count: 0, impressions: 0, reach: 0 };
@@ -218,34 +303,23 @@ async function fetchPostInsights({ postId, accessToken }) {
 /**
  * Get list of FB Pages a user manages (via user token)
  */
-async function getUserPages(userAccessToken) {
+export async function getUserPages(userAccessToken: string): Promise<Record<string, unknown>[]> {
   const result = await graphGet('me/accounts', {
     access_token: userAccessToken,
     fields: 'id,name,access_token,picture,instagram_business_account',
   });
-  return result.data || [];
+  return (result.data as Record<string, unknown>[]) || [];
 }
 
 /**
  * Exchange short-lived token for long-lived token
  */
-async function getLongLivedToken(shortLivedToken) {
+export async function getLongLivedToken(shortLivedToken: string): Promise<string> {
   const result = await graphGet('oauth/access_token', {
     grant_type: 'fb_exchange_token',
     client_id: process.env.FACEBOOK_APP_ID,
     client_secret: process.env.FACEBOOK_APP_SECRET,
     fb_exchange_token: shortLivedToken,
   });
-  return result.access_token;
+  return result.access_token as string;
 }
-
-module.exports = {
-  publishToFacebookPage,
-  publishToInstagram,
-  fetchPageComments,
-  fetchPageDMs,
-  replyToComment,
-  fetchPostInsights,
-  getUserPages,
-  getLongLivedToken,
-};

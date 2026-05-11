@@ -1,17 +1,18 @@
 /**
  * Analytics Routes
  */
-const express = require('express');
+import express, { Request, Response } from 'express';
+import { v4 as uuidv4 } from 'uuid';
+import db from '../db/database';
+import { authenticate } from '../middleware/auth';
+import * as facebookService from '../services/facebookService';
+
 const router = express.Router();
-const { v4: uuidv4 } = require('uuid');
-const db = require('../db/database');
-const { authenticate } = require('../middleware/auth');
-const facebookService = require('../services/facebookService');
 
 router.use(authenticate);
 
 // GET /analytics/overview
-router.get('/overview', (req, res) => {
+router.get('/overview', (req: Request, res: Response) => {
   const days = Number(req.query.days) || 30;
   const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
 
@@ -27,13 +28,13 @@ router.get('/overview', (req, res) => {
     FROM posts p
     LEFT JOIN analytics a ON p.id = a.post_id
     WHERE p.user_id = ? AND p.status = 'published' AND p.published_at >= ?
-  `, [req.user.id, since]);
+  `, [req.user!.id, since]);
 
-  const scheduled = db.get('SELECT COUNT(*) as count FROM posts WHERE user_id = ? AND status = ?', [req.user.id, 'scheduled']);
-  const failed = db.get('SELECT COUNT(*) as count FROM posts WHERE user_id = ? AND status = ?', [req.user.id, 'failed']);
-  const unread = db.get(
+  const scheduled = db.get<{ count: number }>('SELECT COUNT(*) as count FROM posts WHERE user_id = ? AND status = ?', [req.user!.id, 'scheduled']);
+  const failed = db.get<{ count: number }>('SELECT COUNT(*) as count FROM posts WHERE user_id = ? AND status = ?', [req.user!.id, 'failed']);
+  const unread = db.get<{ count: number }>(
     'SELECT COUNT(*) as count FROM comments c JOIN social_accounts sa ON c.account_id = sa.id WHERE sa.user_id = ? AND c.is_read = 0',
-    [req.user.id]
+    [req.user!.id]
   );
 
   res.json({
@@ -48,7 +49,7 @@ router.get('/overview', (req, res) => {
 });
 
 // GET /analytics/posts
-router.get('/posts', (req, res) => {
+router.get('/posts', (req: Request, res: Response) => {
   const limit = Number(req.query.limit) || 10;
   const offset = Number(req.query.offset) || 0;
   const posts = db.all(`
@@ -66,12 +67,12 @@ router.get('/posts', (req, res) => {
     WHERE p.user_id = ? AND p.status = 'published'
     ORDER BY engagement DESC, p.published_at DESC
     LIMIT ? OFFSET ?
-  `, [req.user.id, limit, offset]);
+  `, [req.user!.id, limit, offset]);
   res.json({ posts });
 });
 
 // GET /analytics/chart-data
-router.get('/chart-data', (req, res) => {
+router.get('/chart-data', (req: Request, res: Response) => {
   const days = Number(req.query.days) || 14;
   const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
 
@@ -87,7 +88,7 @@ router.get('/chart-data', (req, res) => {
     WHERE p.user_id = ? AND p.status = 'published' AND p.published_at >= ?
     GROUP BY DATE(p.published_at)
     ORDER BY date ASC
-  `, [req.user.id, since]);
+  `, [req.user!.id, since]);
 
   const platformBreakdown = db.all(`
     SELECT sa.platform, COUNT(p.id) AS post_count,
@@ -98,29 +99,29 @@ router.get('/chart-data', (req, res) => {
     LEFT JOIN analytics a ON p.id = a.post_id
     WHERE p.user_id = ? AND p.status = 'published'
     GROUP BY sa.platform
-  `, [req.user.id]);
+  `, [req.user!.id]);
 
   res.json({ daily, platformBreakdown });
 });
 
 // POST /analytics/sync
-router.post('/sync', async (req, res) => {
+router.post('/sync', async (req: Request, res: Response) => {
   const recentPosts = db.all(`
     SELECT p.*, sa.access_token, sa.platform
     FROM posts p JOIN social_accounts sa ON p.account_id = sa.id
     WHERE p.user_id = ? AND p.status = 'published' AND p.platform_post_id IS NOT NULL
       AND p.published_at >= datetime('now', '-7 days')
     ORDER BY p.published_at DESC LIMIT 20
-  `, [req.user.id]);
+  `, [req.user!.id]) as Array<{ id: string; platform_post_id: string; access_token: string }>;
 
   let updated = 0;
   for (const post of recentPosts) {
     try {
       const metrics = await facebookService.fetchPostInsights({ postId: post.platform_post_id, accessToken: post.access_token });
-      const existing = db.get('SELECT id FROM analytics WHERE post_id = ?', [post.id]);
+      const existing = db.get<{ id: string }>('SELECT id FROM analytics WHERE post_id = ?', [post.id]);
       if (existing) {
         db.run(
-          'UPDATE analytics SET likes_count = ?, comments_count = ?, shares_count = ?, reach = ?, impressions = ?, recorded_at = datetime(\'now\') WHERE post_id = ?',
+          "UPDATE analytics SET likes_count = ?, comments_count = ?, shares_count = ?, reach = ?, impressions = ?, recorded_at = datetime('now') WHERE post_id = ?",
           [metrics.likes_count, metrics.comments_count, metrics.shares_count, metrics.reach, metrics.impressions, post.id]
         );
       } else {
@@ -135,4 +136,4 @@ router.post('/sync', async (req, res) => {
   res.json({ updated, message: 'Synced analytics for ' + updated + ' post(s)' });
 });
 
-module.exports = router;
+export default router;

@@ -9,11 +9,11 @@
  *   db.exec(sql)            → multiple statements
  */
 
-const { Database } = require('node-sqlite3-wasm');
-const path = require('path');
-const fs = require('fs');
+import { Database } from 'node-sqlite3-wasm';
+import path from 'path';
+import fs from 'fs';
 
-const DB_PATH = process.env.DB_PATH || path.join(__dirname, '../../db/nepalflow.sqlite');
+const DB_PATH: string = process.env.DB_PATH || path.join(__dirname, '../../db/nepalflow.sqlite');
 
 // Ensure db directory exists
 if (DB_PATH !== ':memory:') {
@@ -29,7 +29,7 @@ const db = new Database(DB_PATH);
 db.exec('PRAGMA journal_mode = WAL');
 db.exec('PRAGMA foreign_keys = ON');
 
-function initializeDatabase() {
+function initializeDatabase(): void {
   db.exec(`
     CREATE TABLE IF NOT EXISTS users (
       id          TEXT PRIMARY KEY,
@@ -221,7 +221,7 @@ function initializeDatabase() {
   `);
 
   // Safe migrations for existing DBs
-  const migrations = [
+  const migrations: string[] = [
     "ALTER TABLE users ADD COLUMN timezone TEXT DEFAULT 'Asia/Kathmandu'",
     "ALTER TABLE users ADD COLUMN bio TEXT",
     "ALTER TABLE users ADD COLUMN website TEXT",
@@ -242,4 +242,33 @@ function initializeDatabase() {
 
 initializeDatabase();
 
-module.exports = db;
+// Typed wrapper — node-sqlite3-wasm does not support generic type parameters,
+// so we expose our own typed interface on top of the raw Database instance.
+interface TypedDatabase {
+  get<T = Record<string, unknown>>(sql: string, params?: unknown[]): T | undefined;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  all<T = Record<string, unknown>>(sql: string, params?: any[]): T[];
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  run(sql: string, params?: any[]): { changes: number; lastInsertRowid: number };
+  exec(sql: string): void;
+}
+
+const typedDb: TypedDatabase = {
+  get<T = Record<string, unknown>>(sql: string, params?: unknown[]): T | undefined {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return db.get(sql, params as any) as unknown as T | undefined;
+  },
+  all<T = Record<string, unknown>>(sql: string, params?: unknown[]): T[] {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return db.all(sql, params as any) as unknown as T[];
+  },
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  run(sql: string, params?: any[]): { changes: number; lastInsertRowid: number } {
+    return db.run(sql, params) as { changes: number; lastInsertRowid: number };
+  },
+  exec(sql: string): void {
+    db.exec(sql);
+  },
+};
+
+export default typedDb;

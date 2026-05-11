@@ -3,19 +3,27 @@
  * Checks for due posts every minute and publishes via Facebook Graph API
  */
 
-const cron = require('node-cron');
-const { v4: uuidv4 } = require('uuid');
-const db = require('../db/database');
-const facebookService = require('./facebookService');
+import cron from 'node-cron';
+import { v4 as uuidv4 } from 'uuid';
+import db from '../db/database';
+import * as facebookService from './facebookService';
+import { Post } from '../types';
+
+interface DuePost extends Post {
+  access_token: string;
+  fb_page_id: string;
+  platform: string;
+  account_name: string;
+}
 
 let schedulerRunning = false;
 
 /**
  * Fetch all posts that are due for publishing
  */
-function getDuePosts() {
+function getDuePosts(): DuePost[] {
   const now = new Date().toISOString();
-  return db.all(`
+  return db.all<DuePost>(`
     SELECT
       p.*,
       sa.access_token,
@@ -35,7 +43,7 @@ function getDuePosts() {
 /**
  * Mark a post as published
  */
-function markPublished(postId, platformPostId) {
+function markPublished(postId: string, platformPostId: string): void {
   db.run(`
     UPDATE posts
     SET status = 'published',
@@ -49,7 +57,7 @@ function markPublished(postId, platformPostId) {
 /**
  * Mark a post as failed
  */
-function markFailed(postId, errorMessage) {
+function markFailed(postId: string, errorMessage: string): void {
   db.run(`
     UPDATE posts
     SET status = 'failed',
@@ -62,12 +70,12 @@ function markFailed(postId, errorMessage) {
 /**
  * Process a single due post
  */
-async function processPost(post) {
+async function processPost(post: DuePost): Promise<void> {
   try {
     console.log(`📤 Publishing post ${post.id} to ${post.platform}...`);
 
-    let platformPostId;
-    const mediaUrls = post.media_urls ? JSON.parse(post.media_urls) : [];
+    let platformPostId: string | undefined;
+    const mediaUrls: string[] = post.media_urls ? JSON.parse(post.media_urls) : [];
 
     if (post.platform === 'facebook') {
       platformPostId = await facebookService.publishToFacebookPage({
@@ -85,25 +93,28 @@ async function processPost(post) {
       });
     }
 
-    markPublished(post.id, platformPostId);
-    console.log(`✅ Post ${post.id} published successfully. Platform ID: ${platformPostId}`);
+    if (platformPostId) {
+      markPublished(post.id, platformPostId);
+      console.log(`✅ Post ${post.id} published successfully. Platform ID: ${platformPostId}`);
 
-    // Seed initial analytics row
-    db.run(`
-      INSERT INTO analytics (id, post_id, likes_count, comments_count, shares_count)
-      VALUES (?, ?, 0, 0, 0)
-    `, [uuidv4(), post.id]);
+      // Seed initial analytics row
+      db.run(`
+        INSERT INTO analytics (id, post_id, likes_count, comments_count, shares_count)
+        VALUES (?, ?, 0, 0, 0)
+      `, [uuidv4(), post.id]);
+    }
 
-  } catch (error) {
-    console.error(`❌ Failed to publish post ${post.id}:`, error.message);
-    markFailed(post.id, error.message);
+  } catch (error: unknown) {
+    const err = error as Error;
+    console.error(`❌ Failed to publish post ${post.id}:`, err.message);
+    markFailed(post.id, err.message);
   }
 }
 
 /**
  * Main scheduler tick - runs every minute
  */
-async function runSchedulerTick() {
+async function runSchedulerTick(): Promise<void> {
   if (schedulerRunning) return;
   schedulerRunning = true;
 
@@ -115,7 +126,7 @@ async function runSchedulerTick() {
         await processPost(post);
       }
     }
-  } catch (error) {
+  } catch (error: unknown) {
     console.error('Scheduler error:', error);
   } finally {
     schedulerRunning = false;
@@ -125,11 +136,10 @@ async function runSchedulerTick() {
 /**
  * Start the cron scheduler
  */
-function startScheduler() {
+export function startScheduler(): void {
   const interval = process.env.SCHEDULER_INTERVAL || '1';
   console.log(`🚀 Starting post scheduler (every ${interval} minute(s))`);
 
-  // Run every minute: '* * * * *'
   cron.schedule(`*/${interval} * * * *`, runSchedulerTick);
 
   // Run once immediately on startup
@@ -139,14 +149,28 @@ function startScheduler() {
 /**
  * Schedule a new post (insert into DB)
  */
-function schedulePost({ userId, accountId, content, mediaUrls = [], scheduledAt, hashtags = [] }) {
+export function schedulePost({
+  userId,
+  accountId,
+  content,
+  mediaUrls = [],
+  scheduledAt,
+  hashtags = [],
+}: {
+  userId: string;
+  accountId: string;
+  content: string;
+  mediaUrls?: string[];
+  scheduledAt: string;
+  hashtags?: string[];
+}): Post {
   const id = uuidv4();
   db.run(`
     INSERT INTO posts (id, user_id, account_id, content, media_urls, scheduled_at, hashtags, status)
     VALUES (?, ?, ?, ?, ?, ?, ?, 'scheduled')
   `, [id, userId, accountId, content, JSON.stringify(mediaUrls), scheduledAt, JSON.stringify(hashtags)]);
 
-  return db.get('SELECT * FROM posts WHERE id = ?', [id]);
+  return db.get<Post>('SELECT * FROM posts WHERE id = ?', [id])!;
 }
 
-module.exports = { startScheduler, schedulePost, runSchedulerTick, getDuePosts };
+export { runSchedulerTick, getDuePosts };

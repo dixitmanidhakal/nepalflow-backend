@@ -2,7 +2,9 @@
  * Tests: Localization switching
  */
 
-const en = {
+type TranslationDict = Record<string, string>;
+
+const en: TranslationDict = {
   schedule_post: 'Schedule Post',
   inbox: 'Inbox',
   analytics: 'Analytics',
@@ -13,7 +15,7 @@ const en = {
   no_posts: 'No posts found',
 };
 
-const ne = {
+const ne: TranslationDict = {
   schedule_post: 'पोस्ट तालिका बनाउनुहोस्',
   inbox: 'इनबक्स',
   analytics: 'विश्लेषण',
@@ -24,7 +26,7 @@ const ne = {
   no_posts: 'कुनै पोस्ट फेला परेन',
 };
 
-function t(key, lang = 'en') {
+function t(key: string, lang = 'en'): string {
   const dict = lang === 'ne' ? ne : en;
   return dict[key] || key;
 }
